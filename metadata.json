@@ -1,0 +1,6 @@
+{
+  "name": "HomeOS v2",
+  "description": "Household system for tracking duties, gym sessions, and penalties with a shared ledger.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
