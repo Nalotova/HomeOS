@@ -3,7 +3,24 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { 
+  ChevronRight, 
+  ChevronDown, 
+  ChevronUp, 
+  ShoppingBag, 
+  Zap, 
+  Utensils, 
+  Bug, 
+  Trash2, 
+  Plus, 
+  Search, 
+  Sparkles, 
+  Timer, 
+  Trophy, 
+  History,
+  AlertCircle
+} from "lucide-react";
 
 // ─── TYPES ──────────────────────────────────────────────────────────────────
 interface User {
@@ -44,6 +61,11 @@ interface Job {
   photo?: string;
   resolutionPhoto?: string;
   created: string;
+  linkedTask?: {
+    type: 'waste' | 'cleaning' | 'kitchen';
+    user: 'toma' | 'valya';
+    title: string;
+  };
 }
 
 interface WeeklyLogEntry {
@@ -70,6 +92,9 @@ interface AppState {
   kitchenDeadline: string | null;
   monthlyZones: Record<string, string>;
   wastes: Record<string, Record<string, boolean>>;
+  wasteDone: Record<string, boolean>;
+  cleaningTasks: Record<string, Record<string, boolean>>;
+  cleaningDone: Record<string, boolean>;
   bugs: Bug[];
   jobs: Job[];
   gymLogs: GymLog[];
@@ -96,15 +121,21 @@ const defaultState = (): AppState => {
       toma: { name: "Тома", emoji: "🌿", balance: 10.0, gymWallet: 0, totalEarned: 0 },
       valya: { name: "Валя", emoji: "⚡", balance: 10.0, gymWallet: 0, totalEarned: 0 },
     },
-    kitchenDuty: "toma",
+    kitchenDuty: (now.getDay() % 2 === 1) ? "toma" : "valya",
     kitchenDone: false,
-    kitchenTasks: { посудомойка: false, столы: false, плита: false },
+    kitchenTasks: { "Посудомойка": false, "Столы": false, "Плита": false },
     kitchenDeadline: null,
     monthlyZones: { toma: "Bad", valya: "Toilette" },
     wastes: {
-      toma: { bio: false, papier: false },
-      valya: { plastik: false, restmuell: false },
+      toma: {},
+      valya: {},
     },
+    wasteDone: { toma: false, valya: false },
+    cleaningTasks: {
+      toma: {},
+      valya: {},
+    },
+    cleaningDone: { toma: false, valya: false },
     bugs: [],
     jobs: [],
     gymLogs: [],
@@ -127,6 +158,15 @@ function loadState(): AppState {
       }
       if (!parsed.jobs) {
         parsed.jobs = [];
+      }
+      if (!parsed.wasteDone) {
+        parsed.wasteDone = { toma: false, valya: false };
+      }
+      if (!parsed.cleaningTasks) {
+        parsed.cleaningTasks = { toma: {}, valya: {} };
+      }
+      if (!parsed.cleaningDone) {
+        parsed.cleaningDone = { toma: false, valya: false };
       }
       return parsed;
     }
@@ -175,10 +215,16 @@ export default function App() {
   const [bugModal, setBugModal] = useState(false);
   const [bugForm, setBugForm] = useState({ target: "none" as string, desc: "", photo: "", hours: "24", minutes: "0" });
   const [jobModal, setJobModal] = useState(false);
-  const [jobForm, setJobForm] = useState({ title: "", reward: "5", photo: "", hours: "24", minutes: "0" });
+  const [jobForm, setJobForm] = useState({ title: "", reward: "5", photo: "", time: "18:00" });
   const [spendModal, setSpendModal] = useState(false);
   const [spendForm, setSpendForm] = useState({ user: "toma" as "toma" | "valya", amount: "", category: "Вкусняшки" });
   const [payoutConfirm, setPayoutConfirm] = useState(false);
+  const [gymModal, setGymModal] = useState(false);
+  const [delegateModal, setDelegateModal] = useState<{ type: 'waste' | 'cleaning' | 'kitchen', user: 'toma' | 'valya', title: string } | null>(null);
+  const [delegatePrice, setDelegatePrice] = useState("1");
+  const [delegateTitle, setDelegateTitle] = useState("");
+  const [delegateTime, setDelegateTime] = useState("18:00");
+  const [viewPhoto, setViewPhoto] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: "info" | "success" | "warn" | "error" } | null>(null);
   const [tick, setTick] = useState(0);
 
@@ -202,17 +248,109 @@ export default function App() {
 
   useEffect(() => {
     const todayStr = today();
-    if (state.lastKitchenRotation !== todayStr) {
-      persist((s) => ({
-        ...s,
-        kitchenDuty: s.kitchenDuty === "toma" ? "valya" : "toma",
-        kitchenDone: false,
-        kitchenDeadline: null,
-        lastKitchenRotation: todayStr,
-        wastes: { toma: { bio: false, papier: false }, valya: { plastik: false, restmuell: false } },
-      }));
+    const day = new Date().getDay();
+    const expectedDuty = (day % 2 === 1) ? "toma" : "valya";
+    const standardKeys = ["Plastik", "Bio", "Papier", "Restmuell", "plastik", "restmuell", "Пластик", "Био", "Бумага", "Черный"];
+    
+    if (state.lastKitchenRotation !== todayStr || state.kitchenDuty !== expectedDuty || today().includes("01")) {
+      const now = new Date();
+      const isFirstOfMonth = now.getDate() === 1;
+      const currentMonthKey = `${now.getFullYear()}-${now.getMonth()}`;
+      
+      const weekNum = Math.floor(new Date(state.week).getTime() / (7 * 24 * 60 * 60 * 1000));
+      const swap = weekNum % 2 !== 0;
+      
+      let wasteTasks: Record<string, Record<string, boolean>> = { toma: {}, valya: {} };
+      if (day === 2) {
+        if (!swap) { wasteTasks.toma["Plastik"] = false; wasteTasks.valya["Bio"] = false; }
+        else { wasteTasks.toma["Bio"] = false; wasteTasks.valya["Plastik"] = false; }
+      } else if (day === 5) {
+        if (!swap) { 
+          wasteTasks.toma["Bio"] = false; wasteTasks.toma["Papier"] = false; 
+          wasteTasks.valya["Plastik"] = false; wasteTasks.valya["Restmuell"] = false; 
+        } else {
+          wasteTasks.toma["Plastik"] = false; wasteTasks.toma["Restmuell"] = false; 
+          wasteTasks.valya["Bio"] = false; wasteTasks.valya["Papier"] = false; 
+        }
+      }
+
+      persist((s) => {
+        const isNewDay = s.lastKitchenRotation !== todayStr;
+        let nextWastes = { ...s.wastes };
+        let nextMonthlyZones = { ...s.monthlyZones };
+        let nextCleaningTasks = { ...s.cleaningTasks };
+        let nextCleaningDone = { ...s.cleaningDone };
+
+        if (isNewDay) {
+          nextWastes = wasteTasks;
+          
+          // Generate Friday Cleaning Tasks
+          if (day === 5) {
+            const bathroomTasks = { 
+                "Вымыть ванную": false, 
+                "Вымыть раковину в ванной": false, 
+                "Навести порядок в ванной": false, 
+                "Уборка своих территорий": false 
+            };
+            const toiletTasks = { 
+                "Вымыть раковину в туалете": false, 
+                "Вымыть унитаз": false, 
+                "Вымыть пол в туалете": false, 
+                "Уборка своих территорий": false 
+            };
+            
+            nextCleaningTasks = {
+              toma: s.monthlyZones.toma === "Bad" ? bathroomTasks : toiletTasks,
+              valya: s.monthlyZones.valya === "Bad" ? bathroomTasks : toiletTasks
+            };
+            nextCleaningDone = { toma: false, valya: false };
+          } else {
+            // Clear cleaning tasks on non-cleaning days unless admin added something? 
+            // Better to keep them if not done, but user said "appearing on Fridays".
+            // Typically they should be cleared after Friday or once next period starts.
+            // Let's clear them on Monday.
+            if (day === 1) {
+              nextCleaningTasks = { toma: {}, valya: {} };
+              nextCleaningDone = { toma: false, valya: false };
+            }
+          }
+        } else if (![2, 5].includes(day)) {
+          // Surgical cleanup of standard tasks on non-waste days if they somehow persisted
+          ['toma', 'valya'].forEach(u => {
+            const uTasks = { ...(nextWastes[u] || {}) };
+            let changed = false;
+            Object.keys(uTasks).forEach(k => {
+              if (standardKeys.includes(k)) {
+                delete uTasks[k];
+                changed = true;
+              }
+            });
+            if (changed) nextWastes[u] = uTasks;
+          });
+        }
+
+        // Monthly Exchange on the 1st
+        if (isFirstOfMonth && s.lastMonthlyRotation !== currentMonthKey) {
+          nextMonthlyZones = { toma: s.monthlyZones.valya, valya: s.monthlyZones.toma };
+        }
+
+        return {
+          ...s,
+          kitchenDuty: expectedDuty,
+          kitchenDone: isNewDay ? false : s.kitchenDone,
+          kitchenTasks: isNewDay ? { "Посудомойка": false, "Столы": false, "Плита": false } : s.kitchenTasks,
+          kitchenDeadline: isNewDay ? null : s.kitchenDeadline,
+          lastKitchenRotation: todayStr,
+          lastMonthlyRotation: currentMonthKey,
+          monthlyZones: nextMonthlyZones,
+          wastes: nextWastes,
+          wasteDone: isNewDay ? { toma: false, valya: false } : (s.wasteDone || { toma: false, valya: false }),
+          cleaningTasks: nextCleaningTasks,
+          cleaningDone: nextCleaningDone
+        };
+      });
     }
-  }, [state.lastKitchenRotation, persist]);
+  }, [state.lastKitchenRotation, state.kitchenDuty, state.week, state.wastes, state.monthlyZones, state.lastMonthlyRotation, persist]);
 
   useEffect(() => {
     const now = Date.now();
@@ -301,9 +439,18 @@ export default function App() {
 
   const markKitchenDone = () => {
     const u = state.kitchenDuty;
+    const userObj = state.users[u];
     const deadline = new Date();
     deadline.setHours(22, 30, 0, 0);
     const onTime = Date.now() < deadline.getTime();
+
+    const messages = [
+      `🌟 ${userObj.name}, ты просто супер-герой чистоты! 🏆🧹`,
+      `✨ Ого! Кухня сияет! Молодчина, ${userObj.name}! 💎🥦`,
+      `🚀 Миссия выполнена! ${userObj.name}, ты лучший дежурный! 🌈🍕`,
+      `🦾 Железная дисциплина! ${userObj.name}, спасибо за порядок! 🎈🍪`
+    ];
+    const randomMsg = messages[Math.floor(Math.random() * messages.length)];
 
     if (!onTime) {
       persist((s) => ({
@@ -318,9 +465,9 @@ export default function App() {
       showToast("⚠️ Дедлайн пропущен. Штраф -2 €", "error");
     } else {
       persist((s) => ({ ...s, kitchenDone: true }));
-      showToast("✅ Кухня сдана вовремя!", "success");
+      showToast(randomMsg, "success");
     }
-    if (navigator.vibrate) navigator.vibrate([50]);
+    if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
   };
 
   const logGym = (userKey: "toma" | "valya") => {
@@ -332,14 +479,20 @@ export default function App() {
       users: isAdmin
         ? {
             ...s.users,
-            [userKey]: { ...s.users[userKey], gymWallet: s.users[userKey].gymWallet + 3 },
+            [userKey]: { ...s.users[userKey], gymWallet: s.users[userKey].gymWallet + 4 },
           }
         : s.users,
       weeklyLog: isAdmin
-        ? [...s.weeklyLog, { date: todayISO(), user: userKey, event: "gym", delta: 3 }]
+        ? [...s.weeklyLog, { date: todayISO(), user: userKey, event: "gym", delta: 4 }]
         : s.weeklyLog,
     }));
-    showToast(isAdmin ? "+3 € в gym wallet!" : "Запрос отправлен администратору", "success");
+    
+    if (isAdmin) {
+      showToast("+4 € в gym wallet!", "success");
+    } else {
+      setGymModal(true);
+      if (navigator.vibrate) navigator.vibrate([50, 100, 50]);
+    }
   };
 
   const confirmGym = (logIdx: number) => {
@@ -349,11 +502,11 @@ export default function App() {
       gymLogs: s.gymLogs.map((g, i) => (i === logIdx ? { ...g, confirmed: true } : g)),
       users: {
         ...s.users,
-        [log.user]: { ...s.users[log.user], gymWallet: s.users[log.user].gymWallet + 3 },
+        [log.user]: { ...s.users[log.user], gymWallet: s.users[log.user].gymWallet + 4 },
       },
-      weeklyLog: [...s.weeklyLog, { date: log.date, user: log.user, event: "gym", delta: 3 }],
+      weeklyLog: [...s.weeklyLog, { date: log.date, user: log.user, event: "gym", delta: 4 }],
     }));
-    showToast(`+3 € подтверждено для ${state.users[log.user].name}`, "success");
+    showToast(`+4 € подтверждено для ${state.users[log.user].name}`, "success");
   };
 
   const rejectGym = (logIdx: number) => {
@@ -479,8 +632,11 @@ export default function App() {
     if (isNaN(pts) || pts <= 0) return showToast("Сумма некорректна", "error");
 
     const dl = new Date();
-    dl.setHours(dl.getHours() + parseInt(jobForm.hours || "24"));
-    dl.setMinutes(dl.getMinutes() + parseInt(jobForm.minutes || "0"));
+    const [h, m] = jobForm.time.split(":").map(x => parseInt(x));
+    dl.setHours(h, m, 0, 0);
+
+    // If the selected time is in the past for today, assume the user meant today anyway or handle as expired later
+    // For now, just set it to today at that time.
 
     const j: Job = {
       id: Date.now(),
@@ -496,7 +652,7 @@ export default function App() {
 
     persist((s) => ({ ...s, jobs: [...s.jobs, j] }));
     setJobModal(false);
-    setJobForm({ title: "", reward: "5", photo: "", hours: "24", minutes: "0" });
+    setJobForm({ title: "", reward: "5", photo: "", time: "18:00" });
     showToast("📋 Работа выставлена на биржу", "success");
   };
 
@@ -509,12 +665,61 @@ export default function App() {
     showToast("💪 Вы взяли работу!", "success");
   };
 
-  const submitJob = (jobId: number, base64: string) => {
+  const attachPhotoToJob = (jobId: number, base64: string) => {
     persist((s) => ({
       ...s,
-      jobs: s.jobs.map(j => j.id === jobId ? { ...j, status: "review", resolutionPhoto: base64 } : j)
+      jobs: s.jobs.map(j => j.id === jobId ? { ...j, resolutionPhoto: base64 } : j)
+    }));
+    showToast("📸 Фото прикреплено", "info");
+  };
+
+  const submitJob = (jobId: number) => {
+    const job = state.jobs.find(j => j.id === jobId);
+    if (!job?.resolutionPhoto) {
+      showToast("📸 Сначала прикрепите фото отчета!", "warn");
+      return;
+    }
+
+    persist((s) => ({
+      ...s,
+      jobs: s.jobs.map(j => j.id === jobId ? { ...j, status: "review" } : j)
     }));
     showToast("Работа отправлена на проверку", "success");
+  };
+
+  const postToMarket = () => {
+    if (!delegateModal) return;
+    const reward = parseFloat(delegatePrice);
+    if (isNaN(reward) || reward <= 0) {
+      showToast("Введите корректную цену", "warn");
+      return;
+    }
+
+    const dl = new Date();
+    const [h, m] = delegateTime.split(":").map(x => parseInt(x));
+    dl.setHours(h, m, 0, 0);
+
+    const job: Job = {
+      id: Date.now(),
+      creator: activeUser as 'toma' | 'valya',
+      title: delegateTitle || `${delegateModal.title} (от ${state.users[delegateModal.user].name})`,
+      reward,
+      deadline: dl.toISOString(),
+      status: "open",
+      assignee: null,
+      created: new Date().toISOString(),
+      linkedTask: delegateModal
+    };
+
+    persist(s => ({
+      ...s,
+      jobs: [...s.jobs, job]
+    }));
+
+    setDelegateModal(null);
+    setDelegateTitle("");
+    setDelegatePrice("1");
+    showToast("✅ Задача делегирована на Биржу", "success");
   };
 
   const acceptJob = (jobId: number) => {
@@ -522,7 +727,7 @@ export default function App() {
       const job = s.jobs.find(j => j.id === jobId);
       if (!job || !job.assignee) return s;
 
-      const nextUsers = { ...s.users };
+      let nextUsers = { ...s.users };
       const nextLog = [...s.weeklyLog];
 
       // Add to assignee
@@ -536,8 +741,23 @@ export default function App() {
       }
 
       const nextJobs = s.jobs.map(j => j.id === jobId ? { ...j, status: "resolved" } : j);
+      
+      // Auto-complete linked task
+      let nextWastes = { ...s.wastes };
+      let nextCleaning = { ...s.cleaningTasks };
 
-      return { ...s, users: nextUsers, weeklyLog: nextLog, jobs: nextJobs };
+      if (job.linkedTask) {
+        const { type, user, title } = job.linkedTask;
+        if (type === 'waste') {
+          nextWastes[user] = { ...nextWastes[user], [title]: true };
+        } else if (type === 'cleaning') {
+          nextCleaning[user] = { ...nextCleaning[user], [title]: true };
+        } else if (type === 'kitchen') {
+          return { ...s, users: nextUsers, weeklyLog: nextLog, jobs: nextJobs, wastes: nextWastes, cleaningTasks: nextCleaning, kitchenTasks: { ...s.kitchenTasks, [title]: true } };
+        }
+      }
+
+      return { ...s, users: nextUsers, weeklyLog: nextLog, jobs: nextJobs, wastes: nextWastes, cleaningTasks: nextCleaning };
     });
     showToast("✅ Работа принята и оплачена", "success");
   };
@@ -591,94 +811,98 @@ export default function App() {
   const openBugs = state.bugs.filter((b) => b.status === "open");
   const pendingGym = state.gymLogs.filter((g) => !g.confirmed);
   const weeklyExpected = (u: string) => state.users[u].balance + state.users[u].gymWallet;
-  const dayOfWeek = new Date().toLocaleDateString("ru-RU", { weekday: "long" });
-
+  const isTueFri = [2, 5].includes(new Date().getDay());
+  const wasteDuty = state.kitchenDuty;
+  const wasteSecond = wasteDuty === "toma" ? "valya" : "toma";
+ 
   // ──────────────────────────────────────────────────────────────────────────
   function Dashboard() {
     const [now, setNow] = useState(new Date());
     useEffect(() => { const timer = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(timer); }, []);
 
-    const isWasteDay = [2, 5].includes(now.getDay());
-
-    const getTrash = (u: string) => {
+    const focusUser = activeUser && activeUser !== "admin" ? activeUser : null;
+    
+    const getGreeting = () => {
         const day = now.getDay();
-        if (day === 2) {
-            return u === "toma" ? ["🌿 Био мусор", "⚫ Черный контейнер"] : ["♻️ Пластик", "📄 Бумага"];
-        }
+        const dateStr = now.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+        const weekDayStr = now.toLocaleDateString("ru-RU", { weekday: "long" });
+        
+        const base = {
+            date: dateStr,
+            weekday: weekDayStr.charAt(0).toUpperCase() + weekDayStr.slice(1)
+        };
+
         if (day === 5) {
-            return u === "valya" ? ["🌿 Био мусор", "⚫ Черный контейнер"] : ["♻️ Пластик", "📄 Бумага"];
+            return {
+                ...base,
+                title: "🔥 ПЯТНИЧНЫЙ МАРАФОН",
+                text: "А значит сегодня — Великая Пятница! 🧹🗑️ День большой уборки и мусора. Соберите все силы, впереди крутые выходные! 🚀",
+                color: "#4F46E5",
+                bg: "#EEF2FF",
+                icon: "⚡"
+            };
         }
-        return [];
+        if (day === 2) {
+            return {
+                ...base,
+                title: "🚮 ДЕНЬ МУСОРА",
+                text: "Не забудьте выставить баки до 18:00, чтобы не получить штраф! Порядок начинается с малого. 🍏📦",
+                color: "#10B981",
+                bg: "#ECFDF5",
+                icon: "♻️"
+            };
+        }
+        if (day === 0 || day === 6) {
+            return {
+                ...base,
+                title: "🌈 ВРЕМЯ ОТДЫХА",
+                text: "Ура, выходные! Время восстановить силы, играть и наслаждаться жизнью. Вы молодцы! 🍕🎮🍿",
+                color: "#8B5CF6",
+                bg: "#F5F3FF",
+                icon: "🎉"
+            };
+        }
+        return {
+            ...base,
+            title: "✨ НОВЫЙ ДЕНЬ",
+            text: "Отличный момент, чтобы сделать что-то полезное и просто порадоваться дню. Погнали! 🤘💎",
+            color: "#64748B",
+            bg: "#F8FAFC",
+            icon: "☀️"
+        };
     };
 
-    const wasteDeadline = new Date(now);
-    wasteDeadline.setHours(18, 0, 0, 0);
-    const wasteRemaining = wasteDeadline.getTime() - now.getTime();
+    const greeting = getGreeting();
 
-    const kitchenDeadline = new Date(now);
-    kitchenDeadline.setHours(21, 30, 0, 0);
-    const kitchenRemaining = kitchenDeadline.getTime() - now.getTime();
-
-    const formatDeadlineText = (ms: number, labelSuffix: string) => {
-        if (ms <= 0) return "Дедлайн просрочен. Штраф начислен";
-        const hours = Math.floor(ms / (1000 * 60 * 60));
-        const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
-        return `Осталось ${hours}ч ${minutes}мин ${labelSuffix}`;
-    };
-
-    const isCritical = (ms: number) => ms > 0 && ms < 3 * 60 * 60 * 1000;
-
-    const wasteDone = state.wastes && Object.values(state.wastes).every(w => Object.values(w).every(v => v));
+    const taskState = state.kitchenTasks || { "Посудомойка": false, "Столы": false, "Плита": false };
+    const tasks = Object.keys(taskState);
+    const allTasksDone = tasks.length > 0 && tasks.every(t => taskState[t]);
 
     return (
       <div className="animate-in slide-in-from-bottom-3 duration-300" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-        <div style={{ fontSize: 16, color: "#64748B", fontWeight: 500 }}>
-          Сегодня: {now.toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}, {now.toLocaleDateString("ru-RU", { weekday: "long" })}
+        <div style={{ 
+            background: greeting.bg, 
+            padding: "24px", 
+            borderRadius: 24, 
+            border: `1px solid ${greeting.color}30`,
+            position: "relative",
+            overflow: "hidden",
+            boxShadow: `0 10px 30px ${greeting.color}10`
+        }}>
+          <div style={{ position: "absolute", right: -10, top: -10, fontSize: 120, opacity: 0.1, transform: "rotate(15deg)", pointerEvents: "none" }}>
+            {greeting.icon}
+          </div>
+          <div style={{ position: "relative", zIndex: 1 }}>
+            <p style={{ fontSize: 11, fontWeight: 800, color: greeting.color, letterSpacing: 1.5, marginBottom: 8 }}>{greeting.title}</p>
+            <h2 style={{ fontSize: 24, color: "#0F172A", fontWeight: 800, marginBottom: 8, letterSpacing: "-0.5px" }}>
+              Сегодня <span style={{ color: greeting.color }}>{greeting.date}</span>, 
+              <br/>
+              <span style={{ color: greeting.color, textTransform: "lowercase", background: `${greeting.color}15`, padding: "2px 8px", borderRadius: 8 }}>{greeting.weekday}</span>! {greeting.icon}
+            </h2>
+            <p style={{ fontSize: 15, color: "#475569", fontWeight: 500, lineHeight: 1.5, maxWidth: "85%" }}>{greeting.text}</p>
+          </div>
         </div>
-        {isWasteDay && !wasteDone && (
-            <div style={styles.card}>
-              <div style={styles.cardHeader}>
-                <h3 style={styles.sectionTitle}>🗑️ Сегодня вынос мусора (до 18:00)</h3>
-              </div>
-              <div style={{ padding: "16px 24px" }}>
-                  {["toma", "valya"].map(u => (
-                      <div key={u} style={{ marginBottom: 8, fontSize: 14 }}>
-                          <span style={{ fontWeight: 600, color: "#1E293B" }}>{state.users[u].name}: </span>
-                          <span style={{ color: "#475569" }}>{getTrash(u).join(", ")}</span>
-                      </div>
-                  ))}
-                  <div style={{ marginTop: 8, fontSize: 13, color: "#DC2626", fontWeight: 600 }}>⚠️ Штраф за невынос: 1 €!</div>
-                  <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#EF4444", width: `${Math.min(100, Math.max(0, (now.getHours() / 18) * 100))}%` }}></div></div>
-                  <div style={{ marginTop: 4, fontSize: 13, color: isCritical(wasteRemaining) || wasteRemaining <= 0 ? "#DC2626" : "#64748B", fontWeight: isCritical(wasteRemaining) || wasteRemaining <= 0 ? 700 : 500, textAlign: "center" }}>
-                      {formatDeadlineText(wasteRemaining, "до штрафа")}
-                  </div>
-              </div>
-            </div>
-        )}
-        {!state.kitchenDone && (
-            <div style={styles.card}>
-                <div style={styles.cardHeader}>
-                    <h3 style={styles.sectionTitle}>📅 Задачи дежурного: {state.users[state.kitchenDuty].name} (до 21:30)</h3>
-                </div>
-                <div style={{ padding: "16px 24px" }}>
-                    {["Посудомойка", "Столы", "Плита"].map(t => (
-                        <div key={t} style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", padding: "12px", border: "1px solid #E2E8F0", borderRadius: 8, marginBottom: 8, background: (state.kitchenTasks || {})[t] ? "#ECFDF5" : "#FFF" }}>
-                            <span style={{ fontSize: 20 }}>{(state.kitchenTasks || {})[t] ? "✅" : "⬜"}</span>
-                            <span style={{ fontSize: 16, fontWeight: 500 }}>{t}</span>
-                        </div>
-                    ))}
-                    <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#EF4444", width: `${Math.min(100, Math.max(0, (now.getHours() / 21.5) * 100))}%` }}></div></div>
-                    <div style={{ marginTop: 4, fontSize: 13, color: isCritical(kitchenRemaining) || kitchenRemaining <= 0 ? "#DC2626" : "#64748B", fontWeight: isCritical(kitchenRemaining) || kitchenRemaining <= 0 ? 700 : 500, textAlign: "center" }}>
-                        {formatDeadlineText(kitchenRemaining, "до конца дежурства")}
-                    </div>
-                </div>
-                {state.kitchenDuty === activeUser && ["Посудомойка", "Столы", "Плита"].every(t => (state.kitchenTasks || {})[t]) && !state.kitchenDone && (
-                    <div style={{ padding: "0 24px 24px" }}>
-                        <button style={styles.primaryBtn} onClick={markKitchenDone}>Завершить дежурство</button>
-                    </div>
-                )}
-            </div>
-        )}
+
         <div style={{ ...styles.balanceGrid, gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(240px, 1fr))" }}>
           {["toma", "valya"].sort((a, b) => (activeUser === a ? -1 : activeUser === b ? 1 : 0)).map((u) => {
             const usr = state.users[u];
@@ -733,8 +957,8 @@ export default function App() {
           <div style={styles.section}>
             <h3 style={styles.sectionTitle}>QUICK ACTIONS</h3>
             <div style={styles.quickActions}>
-              <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#EEF2FF" }} onClick={() => logGym(activeUser as "toma" | "valya")}>
-                🏋️ Я в зале (+3 €)
+              <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#4F46E5", color: "#FFFFFF", borderColor: "#4338CA" }} onClick={() => logGym(activeUser as "toma" | "valya")}>
+                🏋️ Я в зале (+4 €)
               </button>
               <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#F0FDF4", color: "#166534", borderColor: "#BBF7D0" }} onClick={() => setJobModal(true)}>
                 💼 Дать работу
@@ -803,37 +1027,562 @@ export default function App() {
 
   function Tasks() {
     const isDuty = state.kitchenDuty === activeUser;
-    const tasks = ["Посудомойка", "Столы", "Плита"];
-    const [taskState, setTaskState] = useState(state.kitchenTasks || { "Посудомойка": false, "Столы": false, "Плита": false });
-            
+    const taskState = state.kitchenTasks || { "Посудомойка": false, "Столы": false, "Плита": false };
+    const tasks = Object.keys(taskState);
+    const [newTaskTitle, setNewTaskTitle] = useState("");
+    const [newWasteTask, setNewWasteTask] = useState<{ user: "toma" | "valya", title: string } | null>(null);
+    const [newCleaningTask, setNewCleaningTask] = useState<{ user: "toma" | "valya", title: string } | null>(null);
+
+    const toggleWaste = (u: "toma" | "valya", task: string) => {
+        persist(s => ({
+            ...s,
+            wastes: {
+                ...s.wastes,
+                [u]: { ...s.wastes[u], [task]: !s.wastes[u][task] }
+            }
+        }));
+    };
+
+    const markWasteDone = (u: "toma" | "valya") => {
+        persist(s => ({
+            ...s,
+            wasteDone: { ...s.wasteDone, [u]: true }
+        }));
+        showToast("✨ Задание по мусору выполнено!", "success");
+    };
+
+    const toggleCleaning = (u: "toma" | "valya", task: string) => {
+        persist(s => ({
+            ...s,
+            cleaningTasks: {
+                ...s.cleaningTasks,
+                [u]: { ...s.cleaningTasks[u], [task]: !s.cleaningTasks[u][task] }
+            }
+        }));
+    };
+
+    const markCleaningDone = (u: "toma" | "valya") => {
+        persist(s => ({
+            ...s,
+            cleaningDone: { ...s.cleaningDone, [u]: true }
+        }));
+        showToast("🧹 Уборка дома выполнена!", "success");
+        if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+    };
+             
     const toggleTask = (task: string) => {
-        const nextTasks = { ...(taskState || {}), [task]: !taskState?.[task] };
-        setTaskState(nextTasks);
+        const nextTasks = { ...taskState, [task]: !taskState[task] };
         persist(s => ({ ...s, kitchenTasks: nextTasks }));
     };
 
-    const allDone = tasks.every(t => (taskState || {})[t]);
+    const addTask = () => {
+        if (!newTaskTitle.trim()) return;
+        persist(s => ({ ...s, kitchenTasks: { ...taskState, [newTaskTitle.trim()]: false } }));
+        setNewTaskTitle("");
+    };
+
+    const removeTask = (title: string) => {
+        const nextTasks = { ...taskState };
+        delete nextTasks[title];
+        persist(s => ({ ...s, kitchenTasks: nextTasks }));
+    };
+
+    const allKitchenDone = tasks.length > 0 && tasks.every(t => taskState[t]);
     
-    // Safety check for rendering
-    const isTaskDone = (t: string) => (taskState || {})[t] || false; 
+    // Helpers for timers/progress
+    const now = new Date();
+    const wasteDeadline = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0, 0);
+    const kitchenDeadline = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 21, 30, 0);
+    const wasteRemaining = Math.max(0, wasteDeadline.getTime() - now.getTime());
+    const kitchenRemaining = Math.max(0, kitchenDeadline.getTime() - now.getTime());
+
+    const formatTime = (ms: number) => {
+        const hours = Math.floor(ms / (1000 * 60 * 60));
+        const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+        if (ms <= 0) return "Дедлайн просрочен ⚠️";
+        return `🕒 ${hours} ч ${minutes} мин до штрафа`;
+    };
+
+    // Personalized Filtering
+    const showKitchen = isAdmin || isDuty;
+    
+    const usersToShowWaste = isAdmin ? ["toma", "valya"] : 
+                             (activeUser === "toma" || activeUser === "valya") ? [activeUser] : [];
+
+    const wasteDone = state.wasteDone || { toma: false, valya: false };
+    const hasAnyWasteTasks = usersToShowWaste.some(u => Object.keys(state.wastes[u] || {}).length > 0);
+    
+    // House Cleaning Helpers
+    const cleaningDeadline = new Date(now);
+    cleaningDeadline.setDate(now.getDate() + (5 - now.getDay()));
+    cleaningDeadline.setHours(18, 0, 0, 0);
+    const cleaningRemaining = Math.max(0, cleaningDeadline.getTime() - now.getTime());
+    const hasAnyCleaningTasks = usersToShowWaste.some(u => Object.keys(state.cleaningTasks[u] || {}).length > 0);
+
+    const hasAnyTasks = (showKitchen && !state.kitchenDone) || hasAnyWasteTasks || hasAnyCleaningTasks;
 
     return (
-        <div style={styles.card}>
-            <div style={styles.cardHeader}>
-                <h3 style={styles.sectionTitle}>📅 Задачи дежурного: {state.users[state.kitchenDuty].name} (до 21:30)</h3>
-            </div>
-            <div style={{ padding: "16px 24px" }}>
-                {tasks.map(t => (
-                    <button key={t} style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", padding: "12px", border: "1px solid #E2E8F0", borderRadius: 8, marginBottom: 8, background: isTaskDone(t) ? "#ECFDF5" : "#FFF" }} onClick={() => isDuty && toggleTask(t)}>
-                        <span style={{ fontSize: 20 }}>{isTaskDone(t) ? "✅" : "⬜"}</span>
-                        <span style={{ fontSize: 16, fontWeight: 500 }}>{t}</span>
-                    </button>
-                ))}
-                <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#EF4444", width: `${Math.min(100, Math.max(0, (new Date().getHours() / 21.5) * 100))}%` }}></div></div>
-            </div>
-            {isDuty && allDone && !state.kitchenDone && (
-                <div style={{ padding: "0 24px 24px" }}>
-                    <button style={styles.primaryBtn} onClick={markKitchenDone}>Завершить дежурство</button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+            {!hasAnyTasks && !isAdmin && (
+                <div style={{ ...styles.card, padding: 40, textAlign: "center", background: "#F8FAFC" }}>
+                    <div style={{ fontSize: 64, marginBottom: 16 }}>🛋️</div>
+                    <h3 style={{ fontSize: 20, fontWeight: 800, color: "#1E293B", marginBottom: 8 }}>Никаких задач!</h3>
+                    <p style={{ color: "#64748B", fontSize: 15 }}>Твое время — твои правила. Отдыхай, ты это заслужил(а)! ✨</p>
+                </div>
+            )}
+
+            {/* KITCHEN SECTION */}
+            {showKitchen && (
+                <div style={styles.card}>
+                    <div style={styles.cardHeader}>
+                        <h3 style={styles.sectionTitle}>🧼 Дежурство: {state.users[state.kitchenDuty].name}</h3>
+                    </div>
+                    <div style={{ padding: "16px 24px" }}>
+                        {state.kitchenDone ? (
+                            <div style={{ textAlign: "center", padding: "24px", background: "#ECFDF5", borderRadius: 12, color: "#065F46", fontWeight: 700, border: "2px solid #10B981" }}>
+                                <span style={{ fontSize: 32, display: "block", marginBottom: 8 }}>✨</span>
+                                ДЕЖУРСТВО ЗАВЕРШЕНО! ТЫ МОЛОДЕЦ! 🎈
+                            </div>
+                        ) : (
+                            <>
+                                {tasks.map(t => (
+                                    <div key={t} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                                        <button 
+                                            style={{ 
+                                                flex: 1, 
+                                                display: "flex", 
+                                                alignItems: "center", 
+                                                gap: 12, 
+                                                padding: "12px", 
+                                                border: "1px solid #E2E8F0", 
+                                                borderRadius: 8, 
+                                                background: taskState[t] ? "#ECFDF5" : "#FFF", 
+                                                transition: "all 0.2s", 
+                                                cursor: (isDuty || isAdmin) ? "pointer" : "default" 
+                                            }} 
+                                            onClick={() => (isDuty || isAdmin) && toggleTask(t)}
+                                        >
+                                            <span style={{ fontSize: 20 }}>{taskState[t] ? "✅" : "⬜"}</span>
+                                            <span style={{ fontSize: 16, fontWeight: 500, color: taskState[t] ? "#059669" : "#1E293B" }}>{t}</span>
+                                        </button>
+                                        {!taskState[t] && (activeUser === state.kitchenDuty) && (
+                                            <button 
+                                                style={{ padding: "12px", background: "#EFF6FF", border: "1px solid #DBEAFE", borderRadius: 8, color: "#2563EB" }}
+                                                onClick={() => {
+                                                    setDelegateModal({ type: 'kitchen', user: state.kitchenDuty, title: t });
+                                                    setDelegatePrice("1.5");
+                                                }}
+                                                title="Выставить на Биржу"
+                                            >
+                                                💸
+                                            </button>
+                                        )}
+                                        {isAdmin && (
+                                            <button style={{ ...styles.cancelBtn, background: "#FEF2F2", color: "#EF4444", padding: "0 12px" }} onClick={() => removeTask(t)}>🗑️</button>
+                                        )}
+                                    </div>
+                                ))}
+
+                                {isAdmin && (
+                                    <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                                        <input 
+                                            style={{ ...styles.textarea, height: 44, padding: "0 16px" }} 
+                                            placeholder="Новое действие..." 
+                                            value={newTaskTitle}
+                                            onChange={e => setNewTaskTitle(e.target.value)}
+                                        />
+                                        <button style={{ ...styles.primaryBtn, whiteSpace: "nowrap" }} onClick={addTask}>Добавить</button>
+                                    </div>
+                                )}
+
+                                <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#EF4444", width: `${Math.min(100, Math.max(0, (new Date().getHours() / 21.5) * 100))}%` }}></div></div>
+                                <div style={{ textAlign: "center", fontSize: 12, color: "#64748B", fontWeight: 600, marginTop: 8 }}>
+                                    {formatTime(kitchenRemaining)}
+                                </div>
+
+                                <div style={{ marginTop: 24, padding: "16px 0", borderTop: "1px solid #F1F5F9" }}>
+                                    <button 
+                                        disabled={!allKitchenDone || (!isDuty && !isAdmin)}
+                                        style={{ 
+                                            ...styles.primaryBtn, 
+                                            width: "100%", 
+                                            background: (allKitchenDone && (isDuty || isAdmin)) ? "#4F46E5" : "#CBD5E1",
+                                            cursor: (allKitchenDone && (isDuty || isAdmin)) ? "pointer" : "not-allowed",
+                                            minHeight: 56,
+                                            fontSize: 18,
+                                            boxShadow: allKitchenDone ? "0 10px 15px -3px rgba(79, 70, 229, 0.4)" : "none",
+                                            opacity: 1
+                                        }} 
+                                        onClick={markKitchenDone}
+                                    >
+                                        {!allKitchenDone ? "Сначала выполните задачи" : "ЗАВЕРШИТЬ ДЕЖУРСТВО ✅"}
+                                    </button>
+                                    
+                                    {!allKitchenDone && (
+                                        <p style={{ fontSize: 13, color: "#64748B", textAlign: "center", fontWeight: 500, marginTop: 12 }}>
+                                            Осталось пунктов: {tasks.filter(t => !taskState[t]).length} из {tasks.length}
+                                        </p>
+                                    )}
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* WASTE SECTION */}
+            {(usersToShowWaste.length > 0) && (
+                <div style={styles.card}>
+                    <div style={styles.cardHeader}>
+                        <h3 style={styles.sectionTitle}>🚮 Вынос мусора (до 18:00)</h3>
+                    </div>
+                    <div style={{ padding: "16px 24px" }}>
+                        {usersToShowWaste.map(u => {
+                            const uTasks = state.wastes[u] || {};
+                            const taskNames = Object.keys(uTasks);
+                            
+                            return (
+                                <div key={u} style={{ marginBottom: 24 }}>
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                            <span style={{ fontSize: 20 }}>{state.users[u as 'toma' | 'valya'].emoji}</span>
+                                            <span style={{ fontWeight: 800, fontSize: 16, color: "#0F172A" }}>{state.users[u as 'toma' | 'valya'].name}</span>
+                                        </div>
+                                        {isAdmin && (
+                                            <button 
+                                                style={{ fontSize: 11, background: "#F1F5F9", border: "1px solid #E2E8F0", padding: "6px 12px", borderRadius: 8, fontWeight: 700, color: "#475569" }}
+                                                onClick={() => setNewWasteTask({ user: u as "toma" | "valya", title: "" })}
+                                            >
+                                                + Добавить
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {isAdmin && newWasteTask?.user === u && (
+                                        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                                            <input 
+                                                autoFocus
+                                                style={{ ...styles.textarea, height: 36, padding: "0 12px", flex: 1, fontSize: 13 }}
+                                                placeholder="Что нужно вынести?..."
+                                                value={newWasteTask.title}
+                                                onChange={e => setNewWasteTask({ ...newWasteTask, title: e.target.value })}
+                                                onKeyDown={e => {
+                                                    if (e.key === "Enter" && newWasteTask.title.trim()) {
+                                                        const title = newWasteTask.title.trim();
+                                                        persist(s => ({
+                                                            ...s,
+                                                            wastes: {
+                                                                ...s.wastes,
+                                                                [u]: { ...s.wastes[u], [title]: false }
+                                                            }
+                                                        }));
+                                                        setNewWasteTask(null);
+                                                    } else if (e.key === "Escape") {
+                                                        setNewWasteTask(null);
+                                                    }
+                                                }}
+                                            />
+                                            <button 
+                                                style={{ ...styles.primaryBtn, height: 36, padding: "0 12px", fontSize: 12 }}
+                                                onClick={() => {
+                                                    if (newWasteTask.title.trim()) {
+                                                        const title = newWasteTask.title.trim();
+                                                        persist(s => ({
+                                                            ...s,
+                                                            wastes: {
+                                                                ...s.wastes,
+                                                                [u]: { ...s.wastes[u], [title]: false }
+                                                            }
+                                                        }));
+                                                        setNewWasteTask(null);
+                                                    }
+                                                }}
+                                            >
+                                                Добавить
+                                            </button>
+                                            <button 
+                                                style={{ ...styles.cancelBtn, height: 36, padding: "0 12px", fontSize: 12 }}
+                                                onClick={() => setNewWasteTask(null)}
+                                            >
+                                                Отмена
+                                            </button>
+                                        </div>
+                                    )}
+                                    
+                                    {taskNames.length === 0 ? (
+                                        <div style={{ padding: "16px", border: "1px dashed #E2E8F0", borderRadius: 12, textAlign: "center", fontSize: 14, color: "#94A3B8", fontStyle: "italic", background: "#F8FAFC" }}>
+                                            🍃 На сегодня задач нет! Свобода!
+                                        </div>
+                                    ) : (
+                                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                                            {taskNames.map(tn => (
+                                                <div key={tn} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                                    <button 
+                                                        disabled={activeUser !== u && !isAdmin}
+                                                        style={{ 
+                                                            display: "flex", 
+                                                            alignItems: "center", 
+                                                            gap: 12, 
+                                                            flex: 1,
+                                                            padding: "14px 16px", 
+                                                            border: "1px solid #E2E8F0", 
+                                                            borderRadius: 10, 
+                                                            background: uTasks[tn] ? "#ECFDF5" : "#FFF",
+                                                            cursor: (activeUser === u || isAdmin) ? "pointer" : "default",
+                                                            transition: "all 0.2s"
+                                                        }}
+                                                        onClick={() => (activeUser === u || isAdmin) && toggleWaste(u as 'toma' | 'valya', tn)}
+                                                    >
+                                                        <span style={{ fontSize: 20 }}>{uTasks[tn] ? "✅" : "⬜"}</span>
+                                                        <span style={{ fontSize: 15, fontWeight: 600, color: uTasks[tn] ? "#059669" : "#334155" }}>{tn}</span>
+                                                    </button>
+                                                    {!uTasks[tn] && activeUser === u && (
+                                                        <button 
+                                                            style={{ padding: "12px", background: "#EFF6FF", border: "1px solid #DBEAFE", borderRadius: 10, color: "#2563EB" }}
+                                                            onClick={() => {
+                                                                setDelegateModal({ type: 'waste', user: u as 'toma' | 'valya', title: tn });
+                                                                setDelegatePrice("1.0");
+                                                            }}
+                                                            title="Выставить на Биржу"
+                                                        >
+                                                            💸
+                                                        </button>
+                                                    )}
+                                                    {isAdmin && (
+                                                        <button 
+                                                            style={{ padding: "12px", color: "#EF4444", fontSize: 18 }}
+                                                            onClick={() => {
+                                                                persist(s => {
+                                                                    const nextU = { ...s.wastes[u as 'toma' | 'valya'] };
+                                                                    delete nextU[tn];
+                                                                    return { ...s, wastes: { ...s.wastes, [u]: nextU } };
+                                                                });
+                                                            }}
+                                                        >
+                                                            🗑️
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    {taskNames.length > 0 && !wasteDone[u] && (
+                                        <div style={{ marginTop: 16 }}>
+                                            <button 
+                                                disabled={!taskNames.every(tn => uTasks[tn]) || (activeUser !== u && !isAdmin)}
+                                                style={{ 
+                                                    ...styles.primaryBtn, 
+                                                    width: "100%", 
+                                                    background: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "#059669" : "#CBD5E1",
+                                                    cursor: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "pointer" : "not-allowed",
+                                                    fontSize: 14,
+                                                    height: 48,
+                                                    boxShadow: taskNames.every(tn => uTasks[tn]) ? "0 4px 6px -1px rgba(16, 185, 129, 0.2)" : "none"
+                                                }}
+                                                onClick={() => markWasteDone(u as 'toma' | 'valya')}
+                                            >
+                                                {!taskNames.every(tn => uTasks[tn]) ? `Сначала выполните задачи (${taskNames.filter(tn => !uTasks[tn]).length})` : "ЗАВЕРШИТЬ ВЫНОС ✅"}
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {wasteDone[u] && (
+                                        <div style={{ marginTop: 16, padding: "14px", background: "#ECFDF5", borderRadius: 10, textAlign: "center", color: "#065F46", fontWeight: 700, border: "2px solid #10B981" }}>
+                                            ✨ ВЫНОС МУСОРА ЗАВЕРШЕН!
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                        
+                        {hasAnyWasteTasks && !usersToShowWaste.every(u => wasteDone[u]) && (
+                            <>
+                                <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#EF4444", width: `${Math.min(100, Math.max(0, ((now.getHours() * 60 + now.getMinutes()) / (18 * 60)) * 100))}%` }}></div></div>
+                                <div style={{ marginTop: 8, fontSize: 13, color: wasteRemaining < (3 * 60 * 60 * 1000) ? "#DC2626" : "#64748B", fontWeight: 700, textAlign: "center" }}>
+                                    {formatTime(wasteRemaining)}
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
+            { usersToShowWaste.length > 0 && (
+                <div style={styles.card}>
+                    <div style={styles.cardHeader}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <div style={{ width: 32, height: 32, borderRadius: 8, background: "#F0FDF4", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                <Sparkles size={18} color="#166534" />
+                            </div>
+                            <div>
+                                <h3 style={{ fontSize: 16, fontWeight: 800, color: "#1E293B" }}>УБОРКА ДОМА</h3>
+                                <p style={{ fontSize: 11, fontWeight: 600, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.025em" }}>Еженедельный протокол чистоты</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div style={{ padding: "16px 24px" }}>
+                        {usersToShowWaste.map(u => {
+                            const uTasks = state.cleaningTasks[u] || {};
+                            const taskNames = Object.keys(uTasks);
+                            
+                            return (
+                                <div key={u} style={{ marginBottom: 24 }}>
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                            <span style={{ fontSize: 20 }}>{state.users[u as 'toma' | 'valya'].emoji}</span>
+                                            <span style={{ fontWeight: 800, fontSize: 16, color: "#0F172A" }}>{state.users[u as 'toma' | 'valya'].name}</span>
+                                        </div>
+                                        {isAdmin && (
+                                            <button 
+                                                style={{ fontSize: 11, background: "#F1F5F9", border: "1px solid #E2E8F0", padding: "6px 12px", borderRadius: 8, fontWeight: 700, color: "#475569" }}
+                                                onClick={() => setNewCleaningTask({ user: u as "toma" | "valya", title: "" })}
+                                            >
+                                                + Добавить
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {newCleaningTask?.user === u && (
+                                        <div style={{ display: "flex", gap: 8, marginBottom: 16, background: "#F8FAFC", padding: 12, borderRadius: 12, border: "1px solid #E2E8F0" }}>
+                                            <input 
+                                                autoFocus
+                                                style={{ ...styles.textarea, height: 36, padding: "0 12px", fontSize: 13 }} 
+                                                placeholder="Название задачи..." 
+                                                value={newCleaningTask.title}
+                                                onChange={e => setNewCleaningTask({ ...newCleaningTask, title: e.target.value })}
+                                                onKeyDown={e => {
+                                                    if (e.key === "Enter" && newCleaningTask.title.trim()) {
+                                                        const title = newCleaningTask.title.trim();
+                                                        persist(s => ({
+                                                            ...s,
+                                                            cleaningTasks: {
+                                                                ...s.cleaningTasks,
+                                                                [u]: { ...s.cleaningTasks[u], [title]: false }
+                                                            }
+                                                        }));
+                                                        setNewCleaningTask(null);
+                                                    } else if (e.key === "Escape") {
+                                                        setNewCleaningTask(null);
+                                                    }
+                                                }}
+                                            />
+                                            <button 
+                                                style={{ ...styles.primaryBtn, height: 36, padding: "0 12px", fontSize: 12 }}
+                                                onClick={() => {
+                                                    if (newCleaningTask.title.trim()) {
+                                                        const title = newCleaningTask.title.trim();
+                                                        persist(s => ({
+                                                            ...s,
+                                                            cleaningTasks: {
+                                                                ...s.cleaningTasks,
+                                                                [u]: { ...s.cleaningTasks[u], [title]: false }
+                                                            }
+                                                        }));
+                                                        setNewCleaningTask(null);
+                                                    }
+                                                }}
+                                            >
+                                                OK
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {taskNames.length === 0 ? (
+                                        <div style={{ padding: "16px", border: "1px dashed #E2E8F0", borderRadius: 12, textAlign: "center", fontSize: 14, color: "#94A3B8", fontStyle: "italic", background: "#F8FAFC" }}>
+                                            🏠 Свободно от генеральной уборки!
+                                        </div>
+                                    ) : (
+                                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                                            {taskNames.map(tn => (
+                                                <div key={tn} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                                    <button 
+                                                        disabled={activeUser !== u && !isAdmin}
+                                                        style={{ 
+                                                            display: "flex", 
+                                                            alignItems: "center", 
+                                                            gap: 12, 
+                                                            flex: 1,
+                                                            padding: "14px 16px", 
+                                                            border: "1px solid #E2E8F0", 
+                                                            borderRadius: 10, 
+                                                            background: uTasks[tn] ? "#ECFDF5" : "#FFF",
+                                                            cursor: (activeUser === u || isAdmin) ? "pointer" : "default",
+                                                            transition: "all 0.2s"
+                                                        }}
+                                                        onClick={() => (activeUser === u || isAdmin) && toggleCleaning(u as 'toma' | 'valya', tn)}
+                                                    >
+                                                        <span style={{ fontSize: 20 }}>{uTasks[tn] ? "✅" : "⬜"}</span>
+                                                        <span style={{ fontSize: 15, fontWeight: 600, color: uTasks[tn] ? "#059669" : "#334155" }}>{tn}</span>
+                                                    </button>
+                                                    {!uTasks[tn] && activeUser === u && (
+                                                        <button 
+                                                            style={{ padding: "12px", background: "#EFF6FF", border: "1px solid #DBEAFE", borderRadius: 10, color: "#2563EB" }}
+                                                            onClick={() => {
+                                                                setDelegateModal({ type: 'cleaning', user: u as 'toma' | 'valya', title: tn });
+                                                                setDelegatePrice("2.0");
+                                                            }}
+                                                            title="Выставить на Биржу"
+                                                        >
+                                                            💸
+                                                        </button>
+                                                    )}
+                                                    {isAdmin && (
+                                                        <button 
+                                                            style={{ padding: "12px", color: "#EF4444", fontSize: 18 }}
+                                                            onClick={() => {
+                                                                persist(s => {
+                                                                    const nextU = { ...s.cleaningTasks[u as 'toma' | 'valya'] };
+                                                                    delete nextU[tn];
+                                                                    return { ...s, cleaningTasks: { ...s.cleaningTasks, [u]: nextU } };
+                                                                });
+                                                            }}
+                                                        >
+                                                            🗑️
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    {taskNames.length > 0 && !state.cleaningDone[u] && (
+                                        <div style={{ marginTop: 16 }}>
+                                            <button 
+                                                disabled={!taskNames.every(tn => uTasks[tn]) || (activeUser !== u && !isAdmin)}
+                                                style={{ 
+                                                    ...styles.primaryBtn, 
+                                                    width: "100%", 
+                                                    background: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "#059669" : "#CBD5E1",
+                                                    cursor: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "pointer" : "not-allowed",
+                                                    fontSize: 14,
+                                                    height: 48,
+                                                    boxShadow: taskNames.every(tn => uTasks[tn]) ? "0 4px 6px -1px rgba(16, 185, 129, 0.2)" : "none"
+                                                }}
+                                                onClick={() => markCleaningDone(u as 'toma' | 'valya')}
+                                            >
+                                                {!taskNames.every(tn => uTasks[tn]) ? `Сначала выполните задачи (${taskNames.filter(tn => !uTasks[tn]).length})` : "ЗАВЕРШИТЬ УБОРКУ ✅"}
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {state.cleaningDone[u] && (
+                                        <div style={{ marginTop: 16, padding: "14px", background: "#ECFDF5", borderRadius: 10, textAlign: "center", color: "#065F46", fontWeight: 700, border: "2px solid #10B981" }}>
+                                            ✨ ДОМ СИЯЕТ! УБОРКА ЗАВЕРШЕНА
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+
+                        {hasAnyCleaningTasks && !usersToShowWaste.every(u => state.cleaningDone[u]) && (
+                            <>
+                                <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#10B981", width: `${Math.min(100, Math.max(0, ((now.getHours() * 60 + now.getMinutes()) / (18 * 60)) * 100))}%` }}></div></div>
+                                <div style={{ marginTop: 8, fontSize: 13, color: cleaningRemaining < (3 * 60 * 60 * 1000) ? "#DC2626" : "#64748B", fontWeight: 700, textAlign: "center" }}>
+                                    {formatTime(cleaningRemaining)}
+                                </div>
+                            </>
+                        )}
+                    </div>
                 </div>
             )}
         </div>
@@ -1145,126 +1894,374 @@ export default function App() {
   }
 
   function Market() {
+    const [now, setNow] = useState(new Date());
+    const [historyOpen, setHistoryOpen] = useState(false);
+    useEffect(() => { const timer = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(timer); }, []);
+
+    const activeJobs = state.jobs.filter(j => j.status !== 'resolved' && j.status !== 'expired');
+    const finishedJobs = state.jobs.filter(j => j.status === 'resolved' || j.status === 'expired').reverse();
+
+    const monthlyEarnings = useMemo(() => {
+        const stats: Record<string, number> = { toma: 0, valya: 0 };
+        state.weeklyLog.forEach(l => {
+            if (l.event === 'job_reward' && (l.user === 'toma' || l.user === 'valya')) {
+                stats[l.user] += l.delta;
+            }
+        });
+        return stats;
+    }, [state.weeklyLog]);
+
+    const topHunter = monthlyEarnings.toma > monthlyEarnings.valya ? 'toma' : (monthlyEarnings.valya > 0 ? 'valya' : null);
+    const topAmount = topHunter ? monthlyEarnings[topHunter] : 0;
+
+    const getJobIcon = (title: string, type?: string) => {
+        const t = title.toLowerCase();
+        if (t.includes('кухн') || t.includes('посуд') || t.includes('плит')) return <Utensils size={18} color="#2563EB" />;
+        if (t.includes('баг') || t.includes('ошибк') || t.includes('исправ')) return <Bug size={18} color="#2563EB" />;
+        if (t.includes('мусор') || t.includes('вынос')) return <Trash2 size={18} color="#2563EB" />;
+        return <Zap size={18} color="#2563EB" />;
+    };
+
     return (
-      <div className="animate-in slide-in-from-bottom-3 duration-300" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div className="animate-in slide-in-from-bottom-3 duration-300" style={{ display: "flex", flexDirection: "column", gap: 24, paddingBottom: 80 }}>
+        {/* HEADER */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
-            <h3 style={styles.sectionTitle}>ДОСТУПНЫЕ ПРЕДЛОЖЕНИЯ</h3>
-            <p style={{ fontSize: 13, color: "#64748B", marginTop: -12 }}>Задания для дополнительного заработка</p>
+            <h2 style={{ fontSize: 20, fontWeight: 800, color: "#1E293B", letterSpacing: "-0.5px", margin: 0 }}>ДОСТУПНЫЕ ПРЕДЛОЖЕНИЯ</h2>
+            <p style={{ fontSize: 13, color: "#64748B", marginTop: 4, fontWeight: 500 }}>Перехвати задачу сиблинга или возьми экстра-работу</p>
           </div>
-          <button style={{ ...styles.primaryBtn, background: "#4F46E5" }} onClick={() => setJobModal(true)}>
-            + Добавить работу
-          </button>
-        </div>
-
-        {/* Секция активных работ */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {state.jobs.filter(j => j.status !== 'resolved' && j.status !== 'expired').length === 0 ? (
-            <div style={{ ...styles.card, padding: 32, textAlign: "center", color: "#94A3B8" }}>
-              Нет активных заданий
-            </div>
-          ) : (
-            state.jobs.filter(j => j.status !== 'resolved' && j.status !== 'expired').map(job => (
-              <div key={job.id} style={{ ...styles.card, overflow: "hidden" }}>
-                <div style={{ padding: "16px 20px 0 20px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-                    <h3 style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", lineHeight: 1.4 }}>{job.title}</h3>
-                    <div style={{ background: "#ECFDF5", color: "#059669", padding: "2px 8px", borderRadius: 12, fontWeight: 700, fontSize: 13, flexShrink: 0 }}>
-                      +{job.reward.toFixed(2)} €
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", gap: 8, marginTop: 4, alignItems: "center", fontSize: 11, color: "#64748B" }}>
-                    <span>{job.creator === "admin" ? "Админ" : state.users[job.creator].name}</span>
-                    <span>·</span>
-                    <span>{timeLeft(job.deadline)}</span>
-                  </div>
-                </div>
-                
-                <div style={{ padding: "12px 20px 16px 20px" }}>
-                  {job.photo && (
-                    <div style={{ marginBottom: 12, padding: 4, background: "#F1F5F9", borderRadius: 6 }}>
-                      <img src={job.photo} alt="Task" style={{ width: "100%", maxHeight: 120, objectFit: "cover", borderRadius: 4 }} />
-                    </div>
-                  )}
-                  
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ 
-                      fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 12, 
-                      ...(job.status === "open" ? styles.badgeAmber : styles.badgeIndigo) 
-                    }}>
-                      {job.status === "open" ? "Свободно" : `В работе (${state.users[job.assignee!].name})`}
-                    </span>
-                    
-                    <div style={{ display: "flex", gap: 6 }}>
-                      {(isAdmin || activeUser === job.creator) && (
-                        <button style={{ ...styles.cancelBtn, padding: "4px 8px", fontSize: 11 }} onClick={() => deleteJob(job.id)}>Удалить</button>
-                      )}
-
-                      {job.status === "open" && activeUser !== "admin" && activeUser !== job.creator && (
-                        <button style={{ ...styles.primaryBtn, background: "#4F46E5", padding: "4px 10px", fontSize: 11 }} onClick={() => takeJob(job.id)}>
-                          Взять
-                        </button>
-                      )}
-
-                      {job.status === "in_progress" && activeUser === job.assignee && (
-                        <div style={{ display: "flex", gap: 6 }}>
-                          <label style={{ ...styles.primaryBtn, background: job.resolutionPhoto ? "#64748B" : "#10B981", cursor: "pointer", padding: "4px 10px", fontSize: 11 }}>
-                            {job.resolutionPhoto ? "Фото" : "Загрузить"}
-                            <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => {
-                                const f = e.target.files?.[0];
-                                if (f) {
-                                  const r = new FileReader();
-                                  r.onload = (ev) => submitJob(job.id, ev.target?.result as string);
-                                  r.readAsDataURL(f);
-                                }
-                              }}
-                            />
-                          </label>
-                          {job.resolutionPhoto && (
-                            <button style={{ ...styles.primaryBtn, background: "#10B981", padding: "4px 10px", fontSize: 11 }} onClick={() => {
-                              persist((s) => ({ ...s, jobs: s.jobs.map(j => j.id === job.id ? { ...j, status: "review" } : j) }));
-                              showToast("Отправлено", "success");
-                            }}>
-                              Готово!
-                            </button>
-                          )}
-                        </div>
-                      )}
-
-                      {job.status === "review" && (isAdmin || activeUser === job.creator) && (
-                        <>
-                          <button style={{ ...styles.primaryBtn, background: "#EF4444", padding: "4px 10px", fontSize: 11 }} onClick={() => rejectJob(job.id)}>Нет</button>
-                          <button style={{ ...styles.primaryBtn, background: "#10B981", padding: "4px 10px", fontSize: 11 }} onClick={() => acceptJob(job.id)}>Да</button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))
+          {activeUser && (
+            <button 
+                style={{ ...styles.primaryBtn, background: "#2563EB", display: "flex", alignItems: "center", gap: 6, padding: "8px 12px" }} 
+                onClick={() => setJobModal(true)}
+            >
+              <Plus size={16} /> <span style={{ display: isMobile ? "none" : "inline" }}>Добавить работу</span>
+            </button>
           )}
         </div>
 
-        {/* Секция завершенных работ (свернутая по умолчанию или просто список) */}
-        <h4 style={{ fontSize: 13, fontWeight: 600, color: "#64748B", marginTop: 16 }}>Завершенные и просроченные</h4>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {state.jobs.filter(j => j.status === 'resolved' || j.status === 'expired').reverse().map(job => (
-            <div key={job.id} style={{ ...styles.card, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <p style={{ fontSize: 13, fontWeight: 500 }}>{job.title}</p>
-                <p style={{ fontSize: 10, color: "#94A3B8" }}>{job.status === 'resolved' ? 'Оплачено' : 'Просрочено'}</p>
+        {/* ACTIVE LOTS */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {activeJobs.length === 0 ? (
+            <div style={{ 
+                background: "#FFFFFF", 
+                borderRadius: 24, 
+                padding: "60px 20px", 
+                textAlign: "center", 
+                border: "1px solid #E2E8F0",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 16
+            }}>
+              <div style={{ width: 64, height: 64, background: "#F1F5F9", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "#94A3B8" }}>
+                <ShoppingBag size={32} />
               </div>
-              <span style={{ fontSize: 12, fontWeight: 700, color: job.status === 'resolved' ? "#059669" : "#DC2626" }}>
-                {job.status === 'resolved' ? `+${job.reward.toFixed(2)} €` : '—'}
-              </span>
+              <div>
+                <h3 style={{ fontSize: 18, fontWeight: 700, color: "#374151", margin: "0 0 4px 0" }}>На Бирже пока пусто</h3>
+                <p style={{ fontSize: 14, color: "#64748B", maxWidth: 280, margin: "0 auto", lineHeight: 1.5 }}>Все дома помыты, мусор вынесен. Наслаждайся чистотой... пока мама не нашла новый баг</p>
+              </div>
             </div>
-          ))}
+          ) : (
+            activeJobs.map(job => {
+                const isClaimed = job.status !== 'open';
+                const canTake = !isClaimed && activeUser !== "admin" && activeUser !== job.creator;
+                const timeStr = timeLeft(job.deadline);
+                
+                return (
+                    <div key={job.id} className="job-lot-card" style={{ 
+                        background: "#FFFFFF", 
+                        borderRadius: 16, 
+                        display: "flex", 
+                        overflow: "hidden",
+                        boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)",
+                        border: "1px solid #E2E8F0",
+                        position: "relative"
+                    }}>
+                        {/* LEFT: ICON OR PHOTO */}
+                        <div style={{ padding: "16px 20px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <div 
+                                style={{ 
+                                    width: 60, 
+                                    height: 60, 
+                                    background: job.resolutionPhoto ? "#DCFCE7" : "#EFF6FF", 
+                                    borderRadius: 16, 
+                                    display: "flex", 
+                                    alignItems: "center", 
+                                    justifyContent: "center",
+                                    overflow: "hidden",
+                                    border: job.resolutionPhoto ? "3px solid #10B981" : "1px solid #E2E8F0",
+                                    cursor: job.resolutionPhoto ? "pointer" : "default",
+                                    boxShadow: job.resolutionPhoto ? "0 4px 12px rgba(16, 185, 129, 0.2)" : "none"
+                                }}
+                                onClick={() => job.resolutionPhoto && setViewPhoto(job.resolutionPhoto)}
+                            >
+                                {job.resolutionPhoto ? (
+                                    <img src={job.resolutionPhoto} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                                ) : (
+                                    getJobIcon(job.title)
+                                )}
+                            </div>
+                        </div>
+
+                        {/* CENTER: CONTENT */}
+                        <div style={{ flex: 1, padding: "16px 0", display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0 }}>
+                            {job.resolutionPhoto && (job.status === 'review' || job.status === 'resolved') && (
+                                <button 
+                                    style={{ 
+                                        display: "flex", 
+                                        alignItems: "center", 
+                                        gap: 8, 
+                                        padding: "8px 12px", 
+                                        background: "#10B981", 
+                                        border: "none", 
+                                        borderRadius: 8,
+                                        cursor: "pointer",
+                                        width: "fit-content",
+                                        marginBottom: 10,
+                                        color: "white",
+                                        boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
+                                    }}
+                                    onClick={() => setViewPhoto(job.resolutionPhoto!)}
+                                >
+                                    <span style={{ fontSize: 11, fontWeight: 900 }}>👁️ ОТКРЫТЬ ФОТО ОТЧЕТА</span>
+                                </button>
+                            )}
+
+                            <h3 style={{ fontSize: 16, fontWeight: 800, color: "#0F172A", margin: 0, paddingRight: 8, whiteSpace: "pre-wrap" }}>{job.title}</h3>
+                            
+                            <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4, color: "#2563EB", fontWeight: 700, fontSize: 12 }}>
+                                <Timer size={12} />
+                                <span>{job.status === 'review' ? "Ожидает проверки" : `Осталось ${timeStr}`}</span>
+                            </div>
+                            <div style={{ marginTop: 4, fontSize: 11, color: "#64748B", fontWeight: 500 }}>
+                                {job.creator === "admin" ? "Заказ: Родители" : `От: ${state.users[job.creator].name}`}
+                            </div>
+                        </div>
+
+                        {/* RIGHT: PRICE & ACTION */}
+                        <div style={{ display: "flex", alignItems: "stretch" }}>
+                            <div style={{ padding: "0 20px", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-end", borderLeft: "1px dashed #E2E8F0" }}>
+                                <div style={{ fontSize: 18, fontWeight: 800, color: "#10B981" }}>
+                                    + {job.reward.toFixed(2)} €
+                                </div>
+                                {isClaimed && (
+                                    <div style={{ fontSize: 10, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", marginTop: 2 }}>
+                                        {job.status === 'in_progress' ? `В работе (${state.users[job.assignee!].name})` : "На проверке"}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* TAKEOVER BUTTON */}
+                            {canTake && (
+                                <button 
+                                    style={{ 
+                                        width: isMobile ? 80 : 120, 
+                                        background: "#2563EB", 
+                                        color: "#FFFFFF", 
+                                        border: "none", 
+                                        fontSize: 12, 
+                                        fontWeight: 800, 
+                                        cursor: "pointer",
+                                        transition: "background 0.2s",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        textAlign: "center",
+                                        padding: 8
+                                    }}
+                                    onClick={() => {
+                                        takeJob(job.id);
+                                        if (navigator.vibrate) navigator.vibrate(50);
+                                    }}
+                                >
+                                    ПЕРЕХВАТИТЬ
+                                </button>
+                            )}
+                            
+                            {/* ADMIN/OWNER ACTIONS */}
+                            {(isAdmin || activeUser === job.creator) && (
+                                <div style={{ display: "flex", flexDirection: "column" }}>
+                                    {(isAdmin || (activeUser === job.creator && job.status !== 'review' && job.status !== 'resolved')) && (
+                                        <button 
+                                            style={{ flex: 1, padding: "0 12px", background: "#F1F5F9", border: "none", borderLeft: "1px solid #E2E8F0", cursor: "pointer", color: "#64748B" }}
+                                            onClick={() => deleteJob(job.id)}
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
+                                    )}
+                                    {job.status === "review" && (
+                                        <>
+                                            <button 
+                                                style={{ flex: 1, padding: "0 12px", background: "#10B981", border: "none", borderLeft: "1px solid #E2E8F0", cursor: "pointer", color: "#FFFFFF" }}
+                                                onClick={() => acceptJob(job.id)}
+                                            >
+                                                ✓
+                                            </button>
+                                            <button 
+                                                style={{ flex: 1, padding: "0 12px", background: "#EF4444", border: "none", borderLeft: "1px solid #E2E8F0", cursor: "pointer", color: "#FFFFFF" }}
+                                                onClick={() => rejectJob(job.id)}
+                                            >
+                                                ✕
+                                            </button>
+                                        </>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* WORKER ACTIONS (IF CLAIMED) */}
+                            {job.status === "in_progress" && activeUser === job.assignee && (
+                                <div style={{ display: "flex", width: 140, flexDirection: "column" }}>
+                                    {job.resolutionPhoto ? (
+                                        <div 
+                                            style={{ height: 50, borderTop: "1px solid rgba(255,255,255,0.2)", background: "#059669", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", gap: 8 }}
+                                            onClick={() => setViewPhoto(job.resolutionPhoto!)}
+                                        >
+                                            <img src={job.resolutionPhoto} style={{ width: 24, height: 24, borderRadius: 4, objectFit: "cover", border: "1px solid white" }} />
+                                            <span style={{ fontSize: 10, color: "#FFFFFF", fontWeight: 800 }}>ОТЧЕТ ПРИКРЕПЛЕН</span>
+                                        </div>
+                                    ) : (
+                                        <label style={{ 
+                                            height: 50, 
+                                            background: "#4F46E5", 
+                                            color: "#FFFFFF", 
+                                            display: "flex", 
+                                            alignItems: "center", 
+                                            justifyContent: "center", 
+                                            cursor: "pointer",
+                                            fontSize: 10,
+                                            fontWeight: 800,
+                                            gap: 6
+                                        }}>
+                                            📸 ПРИКРЕПИТЬ ФОТО
+                                            <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => {
+                                                const f = e.target.files?.[0];
+                                                if (f) {
+                                                  const r = new FileReader();
+                                                  r.onload = (ev) => {
+                                                    attachPhotoToJob(job.id, ev.target?.result as string);
+                                                  };
+                                                  r.readAsDataURL(f);
+                                                }
+                                              }}
+                                            />
+                                        </label>
+                                    )}
+                                    <button 
+                                        style={{ 
+                                            height: 60,
+                                            background: job.resolutionPhoto ? "#10B981" : "#94A3B8", 
+                                            color: "#FFFFFF", 
+                                            border: "none",
+                                            fontSize: 13, 
+                                            fontWeight: 900, 
+                                            cursor: job.resolutionPhoto ? "pointer" : "not-allowed",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "center"
+                                        }}
+                                        onClick={() => submitJob(job.id)}
+                                    >
+                                        ГОТОВО
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                );
+            })
+          )}
+        </div>
+
+        {/* LEADERBOARD STRIP */}
+        <div style={{ 
+            marginTop: "auto",
+            background: "#F1F5F9", 
+            borderRadius: 12, 
+            padding: "10px 16px", 
+            display: "flex", 
+            alignItems: "center", 
+            gap: 10,
+            border: "1px solid #E2E8F0"
+        }}>
+            <Trophy size={16} color="#B45309" />
+            <span style={{ fontSize: 13, color: "#334155", fontWeight: 500 }}>
+                {topHunter 
+                    ? <>В этом месяце на Бирже больше всех заработал: <strong>{state.users[topHunter].name} (+{topAmount.toFixed(0)}€)</strong></>
+                    : "В этом месяце охота только началась. Кто станет первым?"
+                }
+            </span>
+        </div>
+
+        {/* HISTORY ACCORDION */}
+        <div style={{ marginTop: 8 }}>
+            <button 
+                style={{ 
+                    width: "100%", 
+                    display: "flex", 
+                    justifyContent: "space-between", 
+                    alignItems: "center", 
+                    padding: "12px 0", 
+                    background: "none", 
+                    border: "none",
+                    borderTop: "1px solid #E2E8F0",
+                    cursor: "pointer",
+                    color: "#64748B",
+                    fontWeight: 600,
+                    fontSize: 14
+                }}
+                onClick={() => setHistoryOpen(!historyOpen)}
+            >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <History size={16} />
+                    <span>История сделок {finishedJobs.length > 0 && `(${finishedJobs.length})`}</span>
+                </div>
+                {historyOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+            </button>
+
+            {historyOpen && (
+                <div className="animate-in slide-in-from-top-2 duration-200" style={{ display: "flex", flexDirection: "column", gap: 8, padding: "8px 0" }}>
+                    {finishedJobs.length === 0 ? (
+                        <p style={{ fontSize: 13, color: "#94A3B8", textAlign: "center", padding: 12 }}>История пуста</p>
+                    ) : (
+                        finishedJobs.slice(0, 10).map(job => (
+                            <div key={job.id} style={{ 
+                                display: "flex", 
+                                justifyContent: "space-between", 
+                                alignItems: "center", 
+                                padding: "10px 12px", 
+                                background: "#FFFFFF", 
+                                borderRadius: 8,
+                                border: "1px solid #F1F5F9"
+                            }}>
+                                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                                    <div style={{ fontSize: 12, color: "#94A3B8", fontFamily: "monospace" }}>
+                                        {new Date(job.created).toLocaleDateString("ru-RU", { day: "2-digit", month: "short" })}
+                                    </div>
+                                    <div style={{ fontSize: 13, color: "#475569" }}>
+                                        {job.assignee 
+                                            ? <span><strong>{state.users[job.assignee].name}</strong> перехватил «{job.title}» у <strong>{job.creator === 'admin' ? "Родителей" : state.users[job.creator].name}</strong></span>
+                                            : <span>«{job.title}» — просрочено</span>
+                                        }
+                                    </div>
+                                </div>
+                                <span style={{ fontSize: 12, fontWeight: 700, color: job.status === 'resolved' ? "#10B981" : "#EF4444" }}>
+                                    {job.status === 'resolved' ? `+${job.reward.toFixed(2)}€` : "—"}
+                                </span>
+                            </div>
+                        ))
+                    )}
+                </div>
+            )}
         </div>
       </div>
     );
   }
 
   function Settings() {
+    const [confirmReset, setConfirmReset] = useState(false);
+    const [confirmMaster, setConfirmMaster] = useState(false);
+
     return (
       <div className="animate-in slide-in-from-bottom-3 duration-300" style={{ display: "flex", flexDirection: "column", gap: 32 }}>
         <div style={styles.section}>
@@ -1315,39 +2312,61 @@ export default function App() {
         </div>
 
         <div style={styles.section}>
-          <h3 style={styles.sectionTitle}>Управление инфраструктурой</h3>
+          <h3 style={styles.sectionTitle}>Перезагрузка системы</h3>
           <div style={styles.card}>
             <div style={styles.dutyCard}>
               <div>
-                <p style={{ fontWeight: 500 }}>Протокол смены зон</p>
-                <p style={{ fontSize: 12, color: "#64748B" }}>Ручное переключение зон для уборки.</p>
+                <p style={{ fontWeight: 600, color: "#F59E0B" }}>Сброс дежурства на сегодня</p>
+                <p style={{ fontSize: 12, color: "#64748B" }}>Сбросить только текущий статус кухни (снять галочки).</p>
               </div>
-              <button style={styles.primaryBtn} onClick={() => {
-                persist((s) => ({
-                  ...s,
-                  monthlyZones: {
-                    toma: s.monthlyZones.toma === "Bad" ? "Toilette" : "Bad",
-                    valya: s.monthlyZones.valya === "Bad" ? "Toilette" : "Bad",
-                  },
-                }));
-                showToast("Инфраструктура синхронизирована", "success");
-              }}>
-                Сменить зоны
-              </button>
+              <div style={{ display: "flex", gap: 8 }}>
+                {!confirmReset ? (
+                  <button style={{ ...styles.primaryBtn, background: "#F59E0B" }} onClick={() => setConfirmReset(true)}>
+                    Сбросить день
+                  </button>
+                ) : (
+                  <>
+                    <button style={{ ...styles.primaryBtn, background: "#EF4444" }} onClick={() => {
+                      persist(s => ({ 
+                        ...s, 
+                        kitchenDone: false, 
+                        lastKitchenRotation: "forced",
+                        kitchenTasks: { "Посудомойка": false, "Столы": false, "Плита": false }
+                      }));
+                      showToast("Дежурство сброшено", "info");
+                      setConfirmReset(false);
+                    }}>Да, сбросить</button>
+                    <button style={styles.cancelBtn} onClick={() => setConfirmReset(false)}>Отмена</button>
+                  </>
+                )}
+              </div>
             </div>
+
             <div style={{ ...styles.dutyCard, borderBottom: "none" }}>
               <div>
-                <p style={{ fontWeight: 500, color: "#EF4444" }}>Экстренная очистка</p>
-                <p style={{ fontSize: 12, color: "#64748B" }}>Удалить все данные из хранилища и перезагрузить систему.</p>
+                <p style={{ fontWeight: 700, color: "#EF4444" }}>МАСТЕР-СБРОС (Чистый лист) ⚠️</p>
+                <p style={{ fontSize: 12, color: "#64748B" }}>
+                  ВНИМАНИЕ! Это обнулит ВСЕ: балансы, историю трат, штрафов, багов и заданий.<br/>
+                  Система вернется к исходному состоянию "как новая".
+                </p>
               </div>
-              <button style={{ ...styles.primaryBtn, background: "#EF4444" }} onClick={() => {
-                if (window.confirm("Требуется подтверждение полной очистки системы. Продолжить?")) {
-                  persist(defaultState());
-                  showToast("Мастер-сброс выполнен", "warn");
-                }
-              }}>
-                Сброс настроек
-              </button>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+                {!confirmMaster ? (
+                  <button style={{ ...styles.primaryBtn, background: "#EF4444", padding: "12px 24px", fontWeight: 800 }} onClick={() => setConfirmMaster(true)}>
+                    ОБНУЛИТЬ ВСЁ
+                  </button>
+                ) : (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button style={{ ...styles.primaryBtn, background: "#EF4444", fontWeight: 800 }} onClick={() => {
+                      persist(defaultState());
+                      showToast("СИСТЕМА ПОЛНОСТЬЮ ОБНУЛЕНА", "warn");
+                      setConfirmMaster(false);
+                      setView("dashboard");
+                    }}>ПОДТВЕРЖДАЮ ПОЛНЫЙ СБРОС</button>
+                    <button style={styles.cancelBtn} onClick={() => setConfirmMaster(false)}>Отмена</button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -1499,7 +2518,7 @@ export default function App() {
           <header style={{ ...styles.header, padding: isMobile ? "0 16px" : "0 32px" }}>
             <h1 style={styles.headerTitle}>
               {isMobile ? "HomeOS" : (view === "dashboard" ? "Обзор" : view === "judge" ? "Баги" : view === "ledger" ? "Ledger" : "Выплата")}
-              {isMobile && <span style={{ marginLeft: 8, fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>v2.1</span>}
+              {isMobile && <span style={{ marginLeft: 8, fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>v2.2</span>}
             </h1>
             <div style={styles.headerRight}>
               {isAdmin && !isMobile && <input type="text" placeholder="Поиск..." style={styles.searchBar} />}
@@ -1570,6 +2589,103 @@ export default function App() {
       </div>
 
       {/* MODALS */}
+      {gymModal && (
+        <div style={styles.overlay} onClick={() => setGymModal(false)}>
+          <div className="animate-in zoom-in duration-300" style={{ ...styles.modal, textAlign: "center", padding: 40 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 80, marginBottom: 20 }}>💪✨</div>
+            <h2 style={{ ...styles.modalTitle, fontSize: 24, marginBottom: 12 }}>СПОРТ — ЭТО МОЩЬ!</h2>
+            <p style={{ ...styles.modalSub, fontSize: 18, color: "#1E293B", lineHeight: 1.5, marginBottom: 24 }}>
+                Ты становишься <strong>сильнее</strong>, <strong>красивее</strong> и <strong>богаче</strong> с каждой тренировкой! 🚀
+            </p>
+            <div style={{ background: "#F0FDF4", padding: 16, borderRadius: 12, marginBottom: 24, border: "1px solid #BBF7D0" }}>
+                <span style={{ fontSize: 15, color: "#166534", fontWeight: 700 }}>
+                    Запрос отправлен родителям. Скоро в твоем кошельке станет на 4€ больше! 💸
+                </span>
+            </div>
+            <button 
+                style={{ ...styles.primaryBtn, width: "100%", height: 56, fontSize: 18 }} 
+                onClick={() => setGymModal(false)}
+            >
+                ТАК ДЕРЖАТЬ! ⚡
+            </button>
+          </div>
+        </div>
+      )}
+
+      {delegateModal && (
+        <div style={styles.overlay} onClick={() => {
+            setDelegateModal(null);
+            setDelegateTitle("");
+        }}>
+          <div className="animate-in zoom-in duration-300" style={{ ...styles.modal, width: "100%", maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ ...styles.modalTitle, textAlign: "center", marginBottom: 24 }}>Новый лот на Бирже</h3>
+            
+            <div style={styles.formGroup}>
+              <label style={{ ...styles.label, fontWeight: 700 }}>Что нужно сделать?</label>
+              <textarea
+                style={{ ...styles.textarea, height: 100, borderRadius: 8 }}
+                placeholder="Что нужно сделать?"
+                value={delegateTitle || `${delegateModal.title} (от ${state.users[delegateModal.user].name})`}
+                onChange={(e) => setDelegateTitle(e.target.value)}
+              />
+            </div>
+
+            <div style={{ display: "flex", gap: 16, marginBottom: 24 }}>
+                <div style={{ flex: 1 }}>
+                    <label style={{ ...styles.label, fontWeight: 700 }}>Вознаграждение</label>
+                    <div style={{ position: "relative" }}>
+                        <input
+                            type="number"
+                            step="0.01"
+                            min="0.1"
+                            style={{ ...styles.textarea, height: 48, padding: "0 40px 0 16px", borderRadius: 8 }}
+                            value={delegatePrice}
+                            onChange={(e) => setDelegatePrice(e.target.value)}
+                        />
+                        <span style={{ position: "absolute", right: 16, top: "50%", transform: "translateY(-50%)", color: "#94A3B8", fontWeight: 700 }}>€</span>
+                    </div>
+                </div>
+
+                <div style={{ flex: 1 }}>
+                    <label style={{ ...styles.label, fontWeight: 700 }}>Выполнить до:</label>
+                    <div style={{ position: "relative" }}>
+                        <input
+                            type="time"
+                            style={{ ...styles.textarea, height: 48, padding: "0 40px 0 16px", borderRadius: 8, display: "flex", alignItems: "center" }}
+                            value={delegateTime}
+                            onChange={(e) => setDelegateTime(e.target.value)}
+                        />
+                        <span style={{ position: "absolute", right: 16, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}>🕒</span>
+                    </div>
+                </div>
+            </div>
+
+            <p style={{ fontSize: 12, color: "#64748B", marginBottom: 24, textAlign: "center" }}>
+                Ваш текущий баланс: <strong>{state.users[activeUser! as 'toma' | 'valya']?.balance.toFixed(2)} €</strong>
+            </p>
+            
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <button 
+                style={{ ...styles.primaryBtn, width: "100%", height: 52, fontSize: 16, fontWeight: 700, background: "#2563EB" }} 
+                onClick={postToMarket}
+                disabled={parseFloat(delegatePrice) > (state.users[activeUser! as 'toma' | 'valya']?.balance || 0)}
+              >
+                Опубликовать
+              </button>
+              <button 
+                style={{ background: "none", border: "none", color: "#64748B", fontSize: 14, fontWeight: 500, cursor: "pointer", padding: "8px" }} 
+                onClick={() => {
+                    setDelegateModal(null);
+                    setDelegateTitle("");
+                }}
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {bugModal && (
         <div style={styles.overlay} onClick={() => setBugModal(false)}>
           <div className="animate-in zoom-in duration-300" style={styles.modal} onClick={(e) => e.stopPropagation()}>
@@ -1655,22 +2771,51 @@ export default function App() {
 
       {jobModal && (
         <div style={styles.overlay} onClick={() => setJobModal(false)}>
-          <div className="animate-in zoom-in duration-300" style={styles.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>💼 Предложить работу</h3>
-            <p style={styles.modalSub}>Кто-то другой сможет взять её и заработать деньги!</p>
+          <div className="animate-in zoom-in duration-300" style={{ ...styles.modal, width: "100%", maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ ...styles.modalTitle, textAlign: "center", marginBottom: 24 }}>Новый лот на Бирже</h3>
             
             <div style={styles.formGroup}>
-              <label style={styles.label}>Описание работы</label>
+              <label style={{ ...styles.label, fontWeight: 700 }}>Что нужно сделать?</label>
               <textarea
-                style={styles.textarea}
-                placeholder="Что нужно сделать?"
+                style={{ ...styles.textarea, height: 120, borderRadius: 8 }}
+                placeholder="Например: Собрать листья во дворе или помыть окна внутри..."
                 value={jobForm.title}
                 onChange={(e) => setJobForm((f) => ({ ...f, title: e.target.value }))}
               />
             </div>
             
+            <div style={{ display: "flex", gap: 16, marginBottom: 24 }}>
+                <div style={{ flex: 1 }}>
+                    <label style={{ ...styles.label, fontWeight: 700 }}>Вознаграждение</label>
+                    <div style={{ position: "relative" }}>
+                        <input
+                            type="number"
+                            step="0.01"
+                            min="0.1"
+                            style={{ ...styles.textarea, height: 48, padding: "0 40px 0 16px", borderRadius: 8 }}
+                            value={jobForm.reward}
+                            onChange={(e) => setJobForm((f) => ({ ...f, reward: e.target.value }))}
+                        />
+                        <span style={{ position: "absolute", right: 16, top: "50%", transform: "translateY(-50%)", color: "#94A3B8", fontWeight: 700 }}>€</span>
+                    </div>
+                </div>
+
+                <div style={{ flex: 1 }}>
+                    <label style={{ ...styles.label, fontWeight: 700 }}>Выполнить до:</label>
+                    <div style={{ position: "relative" }}>
+                        <input
+                            type="time"
+                            style={{ ...styles.textarea, height: 48, padding: "0 40px 0 16px", borderRadius: 8, display: "flex", alignItems: "center" }}
+                            value={jobForm.time}
+                            onChange={(e) => setJobForm((f) => ({ ...f, time: e.target.value }))}
+                        />
+                        <span style={{ position: "absolute", right: 16, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}>🕒</span>
+                    </div>
+                </div>
+            </div>
+
             <div style={styles.formGroup}>
-              <label style={styles.label}>Фото (необязательно)</label>
+              <label style={{ ...styles.label, fontWeight: 700 }}>Фото (необязательно)</label>
               <input 
                 type="file" 
                 accept="image/*"
@@ -1682,53 +2827,23 @@ export default function App() {
                     reader.readAsDataURL(file);
                   }
                 }}
-                style={{ fontSize: 12, color: "#64748B" }}
+                style={{ fontSize: 13, color: "#64748B", background: "#F8FAFC", padding: "12px", border: "1px dashed #E2E8F0", borderRadius: 8, width: "100%" }}
               />
             </div>
             
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Оплата (евро)</label>
-              <input
-                type="number"
-                step="0.01"
-                min="0.1"
-                style={{ ...styles.textarea, height: "auto", padding: "12px 16px" }}
-                value={jobForm.reward}
-                onChange={(e) => setJobForm((f) => ({ ...f, reward: e.target.value }))}
-              />
-            </div>
-
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Срок на выполнение</label>
-              <div style={{ display: "flex", gap: 12 }}>
-                <div style={{ flex: 1, display: "flex", alignItems: "center", position: "relative" }}>
-                  <input
-                    type="number"
-                    min="0"
-                    style={{ ...styles.textarea, height: "auto", padding: "12px 16px", paddingRight: 40 }}
-                    value={jobForm.hours}
-                    onChange={(e) => setJobForm((f) => ({ ...f, hours: e.target.value }))}
-                  />
-                  <span style={{ position: "absolute", right: 16, fontSize: 13, color: "#94A3B8" }}>ч</span>
-                </div>
-                <div style={{ flex: 1, display: "flex", alignItems: "center", position: "relative" }}>
-                  <input
-                    type="number"
-                    min="0"
-                    max="59"
-                    style={{ ...styles.textarea, height: "auto", padding: "12px 16px", paddingRight: 40 }}
-                    value={jobForm.minutes}
-                    onChange={(e) => setJobForm((f) => ({ ...f, minutes: e.target.value }))}
-                  />
-                  <span style={{ position: "absolute", right: 16, fontSize: 13, color: "#94A3B8" }}>м</span>
-                </div>
-              </div>
-            </div>
-
-            <div style={styles.modalActions}>
-              <button style={{ ...styles.cancelBtn, flex: 1 }} onClick={() => setJobModal(false)}>Отмена</button>
-              <button style={{ ...styles.primaryBtn, flex: 2, background: "#4F46E5" }} onClick={createJob} disabled={!jobForm.title.trim()}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
+              <button 
+                style={{ ...styles.primaryBtn, width: "100%", height: 52, fontSize: 16, fontWeight: 700, background: "#2563EB" }} 
+                onClick={createJob}
+                disabled={!jobForm.title.trim()}
+              >
                 Опубликовать
+              </button>
+              <button 
+                style={{ background: "none", border: "none", color: "#64748B", fontSize: 14, fontWeight: 500, cursor: "pointer", padding: "8px" }} 
+                onClick={() => setJobModal(false)}
+              >
+                Отмена
               </button>
             </div>
           </div>
@@ -1809,6 +2924,30 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {viewPhoto && (
+        <div 
+            style={{ ...styles.overlay, background: "rgba(0,0,0,0.9)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }} 
+            onClick={() => setViewPhoto(null)}
+        >
+            <div 
+                className="animate-in zoom-in duration-300"
+                style={{ position: "relative", maxWidth: "90dvw", maxHeight: "90dvh", display: "flex", flexDirection: "column", alignItems: "center" }}
+                onClick={(e) => e.stopPropagation()}
+            >
+                <button 
+                    style={{ alignSelf: "flex-end", marginBottom: 10, background: "rgba(255,255,255,0.2)", border: "none", color: "white", width: 32, height: 32, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+                    onClick={() => setViewPhoto(null)}
+                >
+                    ✕
+                </button>
+                <img 
+                    src={viewPhoto} 
+                    style={{ maxWidth: "100%", maxHeight: "80dvh", borderRadius: 16, boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)", objectFit: "contain" }} 
+                />
+            </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1837,12 +2976,6 @@ const styles = {
   searchBar: { background: "#F1F5F9", border: "none", borderRadius: 20, padding: "6px 16px", fontSize: 14, width: 240, outline: "none" },
   userBtn: { padding: "6px 12px", background: "#F1F5F9", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600, color: "#475569" },
   
-  card: { background: "#FFFFFF", borderRadius: 16, border: "1px solid #E2E8F0", overflow: "hidden" as "hidden" },
-  cardHeader: { padding: "16px 24px", borderBottom: "1px solid #F1F5F9", background: "#FDFDFD" },
-  sectionTitle: { fontSize: 13, fontWeight: 700, color: "#475569", textTransform: "uppercase" as "uppercase", letterSpacing: "1px" },
-  section: { display: "flex", flexDirection: "column" as "column", gap: 16 },
-  badgeAmber: { fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#FFFBEB", color: "#B45309" },
-
   main: { flex: 1, padding: 32, overflowY: "auto" as "auto", display: "flex", flexDirection: "column" as "column", gap: 32 },
   
   toast: { position: "fixed" as "fixed", top: 20, left: "50%", transform: "translateX(-50%)", color: "#fff", padding: "10px 20px", borderRadius: 12, fontSize: 14, fontWeight: 600, zIndex: 1000, whiteSpace: "nowrap" as "nowrap", boxShadow: "0 4px 20px rgba(0,0,0,0.15)" },
@@ -1854,8 +2987,33 @@ const styles = {
   balanceAmount: { fontSize: 30, fontWeight: 700, color: "#0F172A", margin: "4px 0", fontFamily: "DM Mono, monospace" },
   balanceSub: { display: "flex", alignItems: "flex-end", gap: 8, marginTop: 12 },
   statusPillSuccess: { fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#ECFDF5", color: "#059669" },
-  progressBar: { height: 8, background: "#F1F5F9", borderRadius: 4, overflow: "hidden", marginTop: 12 },
-  progressFill: { height: "100%", borderRadius: 4 },
+  progressBar: { marginTop: 16, height: 6, width: "100%", background: "#F1F5F9", borderRadius: 3, overflow: "hidden" as "hidden" },
+  progressFill: { height: "100%", background: "#6366F1", borderRadius: 3 },
+
+  section: { display: "flex", flexDirection: "column" as "column", gap: 16 },
+  sectionTitle: { fontSize: 14, fontWeight: 600, color: "#1E293B" },
+  
+  card: { background: "#FFFFFF", borderRadius: 16, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)", overflow: "hidden" as "hidden" },
+  cardHeader: { padding: "16px 24px", borderBottom: "1px solid #F1F5F9", display: "flex", justifyContent: "space-between", alignItems: "center" },
+  cardContent: { padding: 0 },
+
+  table: { width: "100%", borderCollapse: "collapse" as "collapse", textAlign: "left" as "left" },
+  thead: { background: "#F8FAFC", color: "#64748B", fontSize: 10, fontWeight: 700, textTransform: "uppercase" as "uppercase" },
+  th: { padding: "12px 16px", fontWeight: 700, whiteSpace: "nowrap" as "nowrap" },
+  tr: { borderBottom: "1px solid #F1F5F9", transition: "background 0.2s" },
+  td: { padding: "12px 16px", fontSize: 13, color: "#475569" },
+  tdBold: { fontWeight: 500, color: "#0F172A" },
+
+  dutyCard: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 24px", borderBottom: "1px solid #F1F5F9" },
+  dutyLeft: { display: "flex", gap: 16, alignItems: "center" },
+  dutyEmoji: { width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: "#F1F5F9", borderRadius: 8, fontSize: 18 },
+  dutyName: { fontSize: 14, fontWeight: 500, color: "#0F172A" },
+  dutySub: { fontSize: 12, color: "#64748B" },
+  
+  badge: { padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600 },
+  badgeIndigo: { background: "#EEF2FF", color: "#4F46E5" },
+  badgeEmerald: { background: "#ECFDF5", color: "#059669" },
+  badgeAmber: { background: "#FFFBEB", color: "#B45309" },
 
   primaryBtn: { padding: "8px 16px", background: "#4F46E5", color: "#FFFFFF", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 500, transition: "background 0.2s" },
   dangerBtn: { padding: "8px 16px", background: "#F87171", color: "#FFFFFF", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 500 },
