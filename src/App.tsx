@@ -313,6 +313,16 @@ export default function App() {
                 });
             }
         });
+
+        // New Market Jobs
+        const newMarketJobs = state.jobs.filter(j => j.id > lastSeenJobId.current && j.status === 'open' && j.creator !== activeUser);
+        newMarketJobs.forEach(job => {
+            new Notification("💰 Новое задание на Бирже!", {
+                body: `${job.title}\nНаграда: ${job.reward.toFixed(2)}€`,
+                icon: "/logo.png",
+                tag: `market-job-${job.id}`
+            });
+        });
     }
 
     // --- Admin Notifications ---
