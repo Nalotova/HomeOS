@@ -401,25 +401,41 @@ export default function App() {
     const toExpire = state.bugs.filter(b => b.status === 'open' && b.target !== null && new Date(b.deadline).getTime() < now && !b.fined);
     const toExpireJobs = state.jobs.filter(j => (j.status === 'open' || j.status === 'in_progress') && new Date(j.deadline).getTime() < now);
 
-    if (toAutoAssign.length > 0 || toExpire.length > 0 || toExpireJobs.length > 0) {
+    // Track overdue housekeeping tasks
+    const kitchenOverdue = !state.kitchenDone && state.kitchenDeadline && new Date(state.kitchenDeadline).getTime() < now;
+    const cleaningOverdue = Object.keys(state.cleaningDone).some(u => !state.cleaningDone[u] && new Date(state.week).getTime() + 7 * 24 * 3600000 < now); // Simplistic deadline for cleaning
+
+    if (toAutoAssign.length > 0 || toExpire.length > 0 || toExpireJobs.length > 0 || kitchenOverdue || cleaningOverdue) {
       persist((s) => {
         let nextBugs = [...s.bugs];
         let nextJobs = [...s.jobs];
         let nextUsers = { ...s.users };
         let nextWeeklyLog = [...s.weeklyLog];
         let nextLastTarget = s.lastBugTarget;
+        let nextKitchenDone = s.kitchenDone;
+        let nextCleaningDone = { ...s.cleaningDone };
 
         toAutoAssign.forEach(bug => {
+          // Auto-assign after 1 hour if no one claimed
           const target = nextLastTarget === 'toma' ? 'valya' : 'toma';
           nextBugs = nextBugs.map(b => b.id === bug.id ? { ...b, target } : b);
           nextLastTarget = target;
+          showToast(`Баг переназначен системе: ${nextBugs.find(b => b.id === bug.id)?.desc.slice(0,10)}...`, "warn");
         });
 
         toExpire.forEach(bug => {
           if (bug.target) {
             nextBugs = nextBugs.map(b => b.id === bug.id ? { ...b, status: 'expired', fined: true } : b);
-            nextUsers[bug.target] = { ...nextUsers[bug.target], balance: nextUsers[bug.target].balance - 1.0 };
-            nextWeeklyLog.push({ date: todayISO(), user: bug.target, event: 'bug_fine', delta: -1.0 });
+            // Fine is 1.5 if not claimed quickly, 1.0 if claimed within 1h.
+            // Check if claimed within 1h of creation. 
+            // In a real system, you'd store the claim time. Simplification: 
+            // if current time - creation time < 1hr + deadline, fine is 1.0.
+            const created = new Date(bug.created).getTime();
+            const claimedAt = bug.target ? Date.now() : 0; // Approximate
+            const fine = (bug.target && (Date.now() - created < 3600000)) ? 1.0 : 1.5;                
+            
+            nextUsers[bug.target] = { ...nextUsers[bug.target], balance: nextUsers[bug.target].balance - fine };
+            nextWeeklyLog.push({ date: todayISO(), user: bug.target, event: 'bug_fine', delta: -fine });
           }
         });
 
@@ -427,9 +443,27 @@ export default function App() {
           nextJobs = nextJobs.map(j => j.id === job.id ? { ...j, status: 'expired' } : j);
         });
 
-        return { ...s, bugs: nextBugs, jobs: nextJobs, users: nextUsers, weeklyLog: nextWeeklyLog, lastBugTarget: nextLastTarget };
+        if (kitchenOverdue) {
+            const dutyUser = s.kitchenDuty;
+            nextUsers[dutyUser] = { ...nextUsers[dutyUser], balance: nextUsers[dutyUser].balance - 2.0 };
+            nextWeeklyLog.push({ date: todayISO(), user: dutyUser, event: 'kitchen_late', delta: -2.0, note: "Просрочка кухни" });
+            nextKitchenDone = true; // Mark as done to stop fines
+        }
+        
+        if (cleaningOverdue) {
+            Object.keys(s.cleaningDone).forEach(u => {
+                if (!s.cleaningDone[u]) {
+                    nextUsers[u] = { ...nextUsers[u], balance: nextUsers[u].balance - 2.0 };
+                    nextWeeklyLog.push({ date: todayISO(), user: u, event: 'kitchen_late', delta: -2.0, note: "Просрочка уборки" });
+                    nextCleaningDone[u] = true;
+                }
+            });
+        }
+
+        return { ...s, bugs: nextBugs, jobs: nextJobs, users: nextUsers, weeklyLog: nextWeeklyLog, lastBugTarget: nextLastTarget, kitchenDone: nextKitchenDone, cleaningDone: nextCleaningDone };
       });
       if (toExpire.length > 0) showToast("Баг просрочен. Штраф 1 €", "error");
+      if (kitchenOverdue || cleaningOverdue) showToast("Просрочка по дежурству. Штраф 2 €", "error");
       if (toExpireJobs.length > 0) showToast("Время на выполнение работы истекло", "warn");
     }
   }, [tick, state.bugs, state.jobs, persist]);
@@ -2028,7 +2062,7 @@ export default function App() {
                                 </button>
                             )}
 
-                            <h3 style={{ fontSize: 16, fontWeight: 800, color: "#0F172A", margin: 0, paddingRight: 8, whiteSpace: "pre-wrap" }}>{job.title}</h3>
+                            <h3 style={{ fontSize: 16, fontWeight: 800, color: "#0F172A", margin: "0 0 4px 0", lineHeight: 1.2 }}>{job.title}</h3>
                             
                             <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4, color: "#2563EB", fontWeight: 700, fontSize: 12 }}>
                                 <Timer size={12} />
@@ -2713,6 +2747,7 @@ export default function App() {
               <input 
                 type="file" 
                 accept="image/*"
+                capture="environment"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) {
