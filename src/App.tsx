@@ -1179,6 +1179,54 @@ export default function App() {
 
     return (
       <div className="animate-in slide-in-from-bottom-3 duration-300" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+        
+        {/* NOTIFICATION SETUP BANNER (Prominent for kids) */}
+        {notificationPermission !== "granted" && notificationPermission !== "denied" && (
+            <motion.div 
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                style={{ 
+                    background: "linear-gradient(135deg, #6366F1 0%, #4F46E5 100%)",
+                    color: "white",
+                    padding: "20px",
+                    borderRadius: 24,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 12,
+                    boxShadow: "0 10px 25px -5px rgba(79, 70, 229, 0.4)",
+                    position: "relative",
+                    overflow: "hidden"
+                }}
+            >
+                <div style={{ position: "absolute", top: -20, right: -20, fontSize: 80, opacity: 0.1 }}>🔔</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ background: "rgba(255,255,255,0.2)", width: 40, height: 40, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <Bell size={24} />
+                    </div>
+                    <div>
+                        <h4 style={{ fontWeight: 800, fontSize: 16 }}>Включи уведомления!</h4>
+                        <p style={{ fontSize: 12, opacity: 0.9, fontWeight: 500 }}>Чтобы сразу узнавать о новых багах и деньгах</p>
+                    </div>
+                </div>
+                <button 
+                  onClick={requestPermission}
+                  style={{ 
+                    background: "white", 
+                    color: "#4F46E5", 
+                    border: "none", 
+                    padding: "12px", 
+                    borderRadius: 14, 
+                    fontWeight: 800, 
+                    fontSize: 13,
+                    cursor: "pointer",
+                    boxShadow: "0 4px 12px rgba(0,0,0,0.1)"
+                  }}
+                >
+                  РАЗРЕШИТЬ ОПОВЕЩЕНИЯ
+                </button>
+            </motion.div>
+        )}
+
         {isAdmin && pendingGym.length > 0 && (
           <div className="animate-in fade-in slide-in-from-top-2 duration-500" style={{ 
             background: "#FFFBEB", 
