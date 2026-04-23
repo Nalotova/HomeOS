@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   ChevronRight, 
@@ -26,7 +26,8 @@ import {
   BarChart3 as MarketIcon,
   Activity as ActivityIcon,
   Settings as SettingsIcon,
-  RefreshCw
+  RefreshCw,
+  Bell
 } from "lucide-react";
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, onSnapshot, setDoc, getDocFromServer } from 'firebase/firestore';
@@ -269,6 +270,84 @@ export default function App() {
   const [toast, setToast] = useState<{ msg: string; type: "info" | "success" | "warn" | "error" } | null>(null);
   const [tick, setTick] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>("default");
+
+  const lastSeenBugId = useRef<number>(0);
+  const lastSeenJobId = useRef<number>(0);
+  const lastSeenGymLogId = useRef<string>("");
+  const notifiedDeadlines = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if ("Notification" in window) {
+      setNotificationPermission(Notification.permission);
+    }
+  }, []);
+
+  const requestPermission = async () => {
+    if (!("Notification" in window)) {
+        showToast("Ваш браузер не поддерживает уведомления", "error");
+        return;
+    }
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+    if (permission === "granted") {
+        showToast("Уведомления включены!", "success");
+        new Notification("HomeOS", { body: "Уведомления успешно настроены!", icon: "/logo.png" });
+    }
+  };
+
+  useEffect(() => {
+    if (!hasSynced || !activeUser || notificationPermission !== "granted") return;
+
+    // --- Bug Notifications for Children ---
+    if (activeUser !== 'admin') {
+        const newBugs = state.bugs.filter(b => b.id > lastSeenBugId.current);
+        newBugs.forEach(bug => {
+            // Rules: if no target -> notify both. if target is me -> notify me.
+            const isRelevant = (bug.target === null) || (bug.target === activeUser);
+            if (isRelevant) {
+                new Notification("🐛 Новый инцидент!", {
+                  body: bug.desc,
+                  icon: "/logo.png",
+                  tag: `bug-${bug.id}` // Collapse duplicates
+                });
+            }
+        });
+    }
+
+    // --- Admin Notifications ---
+    if (activeUser === 'admin') {
+        // Gym Requests
+        const newGym = state.gymLogs.filter(g => !g.confirmed && g.date + g.user !== lastSeenGymLogId.current);
+        newGym.forEach(g => {
+            const name = state.users[g.user]?.name || 'Ребенок';
+            new Notification("🏋️ Запрос на зал", {
+                body: `${name} в зале! Нужно подтверждение.`,
+                icon: "/logo.png",
+                tag: `gym-${g.date}-${g.user}`
+            });
+        });
+
+        // Admin Tasks (Jobs where assignee or title implies admin)
+        const newAdminJobs = state.jobs.filter(j => j.id > lastSeenJobId.current && j.assignee === 'admin');
+        newAdminJobs.forEach(job => {
+            new Notification("📝 Новое поручение", {
+                body: job.title,
+                icon: "/logo.png",
+                tag: `job-${job.id}`
+            });
+        });
+    }
+
+    // Update markers
+    if (state.bugs.length > 0) lastSeenBugId.current = Math.max(...state.bugs.map(b => b.id), lastSeenBugId.current);
+    if (state.jobs.length > 0) lastSeenJobId.current = Math.max(...state.jobs.map(j => j.id), lastSeenJobId.current);
+    if (state.gymLogs.length > 0) {
+        const last = state.gymLogs[state.gymLogs.length - 1];
+        lastSeenGymLogId.current = last.date + last.user;
+    }
+
+  }, [state.bugs, state.jobs, state.gymLogs, activeUser, hasSynced, notificationPermission]);
 
   useEffect(() => {
     const timer = setTimeout(() => setIsLoading(false), 2500);
@@ -280,6 +359,50 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
+  // --- Deadline Reminders ---
+  useEffect(() => {
+    if (!hasSynced || !activeUser || notificationPermission !== "granted") return;
+
+    const now = Date.now();
+    const thirtyMins = 30 * 60 * 1000;
+
+    // Check Bugs
+    state.bugs.forEach(bug => {
+        if (bug.status === 'open' && bug.target === activeUser) {
+            const deadline = new Date(bug.deadline).getTime();
+            const timeUntil = deadline - now;
+            const tag = `deadline-bug-${bug.id}`;
+
+            if (timeUntil > 0 && timeUntil <= thirtyMins && !notifiedDeadlines.current.has(tag)) {
+                new Notification("⏰ Время истекает!", {
+                    body: `Осталось 30 минут, чтобы исправить баг: ${bug.desc}`,
+                    icon: "/logo.png",
+                    tag
+                });
+                notifiedDeadlines.current.add(tag);
+            }
+        }
+    });
+
+    // Check Jobs
+    state.jobs.forEach(job => {
+        if (job.status === 'in_progress' && job.assignee === activeUser) {
+            const deadline = new Date(job.deadline).getTime();
+            const timeUntil = deadline - now;
+            const tag = `deadline-job-${job.id}`;
+
+            if (timeUntil > 0 && timeUntil <= thirtyMins && !notifiedDeadlines.current.has(tag)) {
+                new Notification("⏳ Дедлайн на Бирже!", {
+                    body: `Осталось 30 минут для задачи: ${job.title}`,
+                    icon: "/logo.png",
+                    tag
+                });
+                notifiedDeadlines.current.add(tag);
+            }
+        }
+    });
+  }, [tick, state.bugs, state.jobs, activeUser, hasSynced, notificationPermission]);
+
   const persist = useCallback((updater: AppState | ((prev: AppState) => AppState), forceServerUpdate = true) => {
     if (forceServerUpdate && !hasSynced) {
         console.warn("Persist ignored: cloud sync not ready.");
@@ -288,6 +411,12 @@ export default function App() {
     setState((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       if (forceServerUpdate) {
+        // Size warning (Firestore doc limit is ~1MB)
+        const sizeEstimation = JSON.stringify(next).length;
+        if (sizeEstimation > 800000) { 
+           showToast("⚠️ Память облака заполнена на 80%. Рекомендуется выполнить очистку медиа в настройках.", "warn");
+        }
+
         setDoc(doc(db, "state", "current"), next).catch(err => {
             const msg = handleFirestoreError(err, 'write', 'state/current');
             showToast(msg, "error");
@@ -676,6 +805,15 @@ export default function App() {
     setSpendModal(false);
     setSpendForm({ user: "toma", amount: "", category: "Вкусняшки" });
     showToast(`Записано: ${state.users[u].name} - ${fmtBalance(amount)}`, "info");
+  };
+
+  const clearAllMedia = () => {
+    persist(s => ({
+      ...s,
+      bugs: s.bugs.map(b => ({ ...b, photo: undefined, resolutionPhoto: undefined })),
+      jobs: s.jobs.map(j => ({ ...j, photo: undefined, resolutionPhoto: undefined }))
+    }));
+    showToast("🧹 Облако очищено от медиафайлов", "success");
   };
 
   const createLog = (user: string, event: WeeklyLogEntry['event'], delta: number, note?: string) => {
@@ -2566,6 +2704,53 @@ export default function App() {
               </div>
               <button style={{ ...styles.primaryBtn, width: isMobile ? "100%" : "auto" }} onClick={() => setPayoutConfirm(true)}>
                 Выплата
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div style={styles.section}>
+          <h3 style={styles.sectionTitle}>Уведомления</h3>
+          <div style={styles.card}>
+            <div style={styles.dutyCard}>
+              <div style={{ flex: 1 }}>
+                <p style={{ fontWeight: 600 }}>Всплывающие уведомления</p>
+                <p style={{ fontSize: 12, color: "#64748B" }}>
+                    {notificationPermission === "granted" 
+                        ? "Уведомления активны и приходят при важных событиях." 
+                        : "Получайте оповещения о новых багах и запросах мгновенно."}
+                </p>
+              </div>
+              {notificationPermission !== "granted" ? (
+                  <button style={{ ...styles.primaryBtn, background: "#10B981", display: "flex", alignItems: "center", gap: 8 }} onClick={requestPermission}>
+                    <Bell size={16} /> Включить
+                  </button>
+              ) : (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#10B981", fontWeight: 700, fontSize: 13 }}>
+                      <TasksIcon size={16} /> ВКЛЮЧЕНО
+                  </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div style={styles.section}>
+          <h3 style={styles.sectionTitle}>Обслуживание базы данных</h3>
+          <div style={styles.card}>
+            <div style={styles.dutyCard}>
+              <div style={{ flex: 1 }}>
+                <p style={{ fontWeight: 600 }}>Очистка медиа-файлов</p>
+                <p style={{ fontSize: 12, color: "#64748B" }}>Удаляет все фотографии из багов и заданий, освобождая место в облаке. Сами записи останутся.</p>
+              </div>
+              <button 
+                style={{ ...styles.primaryBtn, background: "#6366F1" }} 
+                onClick={() => {
+                  if (window.confirm("Удалить все фотографии из текущих записей? Это действие необратимо.")) {
+                    clearAllMedia();
+                  }
+                }}
+              >
+                Очистить фото
               </button>
             </div>
           </div>
