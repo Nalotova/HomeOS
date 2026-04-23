@@ -104,6 +104,8 @@ interface AppState {
   lastMonthlyRotation: string | null;
   lastBugTarget: 'toma' | 'valya' | null;
   pins: Record<string, string>;
+  weeklyWinner: { name: string; emoji: string; week: string } | null;
+  totalPaidOut: number;
 }
 
 // ─── STORAGE HELPERS ────────────────────────────────────────────────────────
@@ -145,6 +147,8 @@ const defaultState = (): AppState => {
     lastMonthlyRotation: `${now.getFullYear()}-${now.getMonth()}`,
     lastBugTarget: null,
     pins: { admin: "0000", toma: "1111", valya: "2222" },
+    weeklyWinner: null,
+    totalPaidOut: 0,
   };
 };
 
@@ -213,6 +217,8 @@ export default function App() {
   const [authTarget, setAuthTarget] = useState<"toma" | "valya" | "admin" | null>(null);
   const [authPin, setAuthPin] = useState("");
   const [bugModal, setBugModal] = useState(false);
+  const [requestTaskModal, setRequestTaskModal] = useState(false);
+  const [requestTaskDesc, setRequestTaskDesc] = useState("");
   const [bugForm, setBugForm] = useState({ target: "none" as string, desc: "", photo: "", hours: "24", minutes: "0" });
   const [jobModal, setJobModal] = useState(false);
   const [jobForm, setJobForm] = useState({ title: "", reward: "5", photo: "", time: "18:00" });
@@ -442,6 +448,12 @@ export default function App() {
         toExpireJobs.forEach(job => {
           nextJobs = nextJobs.map(j => j.id === job.id ? { ...j, status: 'expired' } : j);
         });
+
+        // Weekly cleanup of completed parent tasks
+        const day = new Date().getDay();
+        if (day === 1) { // On Monday
+           nextJobs = nextJobs.filter(j => !(j as any).isParentTask || j.status !== 'resolved');
+        }
 
         if (kitchenOverdue) {
             const dutyUser = s.kitchenDuty;
@@ -817,6 +829,12 @@ export default function App() {
     const valya = state.users.valya;
     const tomaTotal = toma.balance + toma.gymWallet;
     const valyaTotal = valya.balance + valya.gymWallet;
+    
+    // Determine winner
+    let winner = null;
+    if (tomaTotal > valyaTotal) winner = { name: toma.name, emoji: toma.emoji, week: state.week };
+    else if (valyaTotal > tomaTotal) winner = { name: valya.name, emoji: valya.emoji, week: state.week };
+
     persist((s) => ({
       ...s,
       payouts: [
@@ -836,7 +854,14 @@ export default function App() {
       weeklyLog: [],
       bugs: [],
       kitchenDone: false,
+      kitchenTasks: { "Посудомойка": false, "Столы": false, "Плита": false }, // Reset kitchen tasks
+      cleaningDone: { toma: false, valya: false }, // Reset cleaning tasks
+      wasteDone: { toma: false, valya: false }, // Reset waste tasks
+      wastes: { toma: {}, valya: {} },
+      cleaningTasks: { toma: {}, valya: {} },
       gymLogs: [],
+      weeklyWinner: winner,
+      totalPaidOut: s.totalPaidOut + tomaTotal + valyaTotal
     }));
     setPayoutConfirm(false);
     showToast(`💰 Выплата: Тома ${fmtBalance(tomaTotal)}, Валя ${fmtBalance(valyaTotal)}`, "success");
@@ -957,7 +982,8 @@ export default function App() {
                   <h2 style={{ fontSize: isMobile ? 40 : 48, fontWeight: 700, color: "#0F172A", letterSpacing: "-1px", lineHeight: 1 }}>{weeklyExpected(u).toFixed(2)}</h2>
                   <span style={{ fontSize: isMobile ? 24 : 32, fontWeight: 500, color: "#94A3B8" }}>€</span>
                 </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", minHeight: 24 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", minHeight: 24, marginTop: 12 }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: "#F1F5F9", color: "#475569" }}>💰 Всего: {usr.totalEarned.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: usr.gymWallet > 0 ? "#ECFDF5" : "#F8FAFC", color: usr.gymWallet > 0 ? "#059669" : "#94A3B8", boxShadow: usr.gymWallet > 0 ? "0 1px 2px rgba(5, 150, 105, 0.1)" : "none" }}>🏋️ Зал: +{usr.gymWallet.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: expenses > 0 ? "#EFF6FF" : "#F8FAFC", color: expenses > 0 ? "#2563EB" : "#94A3B8", boxShadow: expenses > 0 ? "0 1px 2px rgba(37, 99, 235, 0.1)" : "none" }}>🍬 Траты: -{expenses.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: fines > 0 ? "#FEF2F2" : "#F8FAFC", color: fines > 0 ? "#DC2626" : "#94A3B8", boxShadow: fines > 0 ? "0 1px 2px rgba(220, 38, 38, 0.1)" : "none" }}>⚠️ Штрафы: -{fines.toFixed(2)} €</span>
@@ -966,6 +992,13 @@ export default function App() {
             );
           })}
         </div>
+
+        {state.weeklyWinner && (
+          <div style={{ ...styles.card, background: "#FFFBEB", border: "2px solid #FCD34D" }}>
+            <h3 style={styles.sectionTitle}>🏆 Доска почета</h3>
+            <p style={{ fontSize: 14, color: "#92400E" }}>Победитель недели: {state.weeklyWinner.name} {state.weeklyWinner.emoji}</p>
+          </div>
+        )}
 
         {!focusUser && (
           <div style={styles.card}>
@@ -996,6 +1029,9 @@ export default function App() {
               </button>
               <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#F0FDF4", color: "#166534", borderColor: "#BBF7D0" }} onClick={() => setJobModal(true)}>
                 💼 Дать работу
+              </button>
+              <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#E0E7FF", color: "#4338CA", borderColor: "#C7D2FE" }} onClick={() => setRequestTaskModal(true)}>
+                📝 Поручить маме
               </button>
             </div>
           </div>
@@ -1104,7 +1140,9 @@ export default function App() {
         if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
     };
              
-    const toggleTask = (task: string) => {
+     const adminRequests = state.jobs.filter(j => (j as any).isParentTask);
+     
+     const toggleTask = (task: string) => {
         const nextTasks = { ...taskState, [task]: !taskState[task] };
         persist(s => ({ ...s, kitchenTasks: nextTasks }));
     };
@@ -1162,6 +1200,51 @@ export default function App() {
                     <div style={{ fontSize: 64, marginBottom: 16 }}>🛋️</div>
                     <h3 style={{ fontSize: 20, fontWeight: 800, color: "#1E293B", marginBottom: 8 }}>Никаких задач!</h3>
                     <p style={{ color: "#64748B", fontSize: 15 }}>Твое время — твои правила. Отдыхай, ты это заслужил(а)! ✨</p>
+                </div>
+            )}
+
+            {/* ADMIN REQUESTS (For Admin only) */}
+            {isAdmin && adminRequests.length > 0 && (
+                <div style={{ marginBottom: 24 }}>
+                    <h3 style={{ fontSize: 16, fontWeight: 800, color: "#92400E", marginBottom: 12 }}>⚡ Запросы от детей ({adminRequests.length})</h3>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                        {[...adminRequests].sort((a,b) => (a.status === 'resolved' ? 1 : 0) - (b.status === 'resolved' ? 1 : 0)).map(job => (
+                            <div key={job.id} style={{ background: job.status === 'resolved' ? "#F1F5F9" : "#FFFBEB", border: job.status === 'resolved' ? "1px solid #CBD5E1" : "1px solid #FCD34D", borderRadius: 16, padding: 16 }}>
+                                <p style={{ fontWeight: 600, color: job.status === 'resolved' ? "#64748B" : "#78350F", textDecoration: job.status === 'resolved' ? "line-through" : "none" }}>{job.status === 'resolved' && "✅ "}{job.title}</p>
+                                {job.status !== 'resolved' && (
+                                    <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                                        <button style={{ ...styles.primaryBtn, background: "#10B981" }} onClick={() => {
+                                            persist(s => ({
+                                                ...s,
+                                                jobs: s.jobs.map(j => j.id === job.id ? { ...j, status: 'resolved' } : j)
+                                            }));
+                                            showToast("Задача отмечена как выполненная!", "success");
+                                        }}>Выполнено</button>
+                                        <button style={{ ...styles.cancelBtn }} onClick={() => deleteJob(job.id)}>Удалить</button>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* MY REQUESTS (For Children only) */}
+            {!isAdmin && activeUser && adminRequests.filter(j => j.creator === activeUser).length > 0 && (
+                <div style={{ marginBottom: 24 }}>
+                    <h3 style={{ fontSize: 16, fontWeight: 800, color: "#4F46E5", marginBottom: 12 }}>📤 Мои запросы к маме</h3>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                        {[...adminRequests].filter(j => j.creator === activeUser).sort((a,b) => (a.status === 'resolved' ? 1 : 0) - (b.status === 'resolved' ? 1 : 0)).map(job => (
+                            <div key={job.id} style={{ background: job.status === 'resolved' ? "#F8FAFC" : "#EEF2FF", border: job.status === 'resolved' ? "1px solid #CBD5E1" : "1px solid #C7D2FE", borderRadius: 16, padding: 16 }}>
+                                <p style={{ fontWeight: 600, color: job.status === 'resolved' ? "#64748B" : "#4338CA", textDecoration: job.status === 'resolved' ? "line-through" : "none" }}>{job.status === 'resolved' && "✅ "}{job.title}</p>
+                                {job.status !== 'resolved' && (
+                                    <div style={{ marginTop: 8 }}>
+                                        <button style={{ ...styles.cancelBtn }} onClick={() => deleteJob(job.id)}>Удалить запрос</button>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
                 </div>
             )}
 
@@ -1636,11 +1719,18 @@ export default function App() {
             <h2 style={styles.sectionTitle}>Последние инциденты</h2>
             <p style={{ fontSize: 12, color: "#64748B" }}>Отслеживаемые баги и сбои инфраструктуры</p>
           </div>
-          {isAdmin && (
-            <button style={styles.primaryBtn} onClick={() => setBugModal(true)}>
-              Создать баг
-            </button>
-          )}
+          <div style={{ display: "flex", gap: "10px" }}>
+            {isAdmin && (
+              <button style={styles.primaryBtn} onClick={() => setBugModal(true)}>
+                Создать баг
+              </button>
+            )}
+            {!isAdmin && (
+                <button style={{ ...styles.primaryBtn, background: "#8B5CF6" }} onClick={() => setRequestTaskModal(true)}>
+                    Поручить маме
+                </button>
+            )}
+          </div>
         </div>
 
         <div style={styles.card}>
@@ -1933,6 +2023,10 @@ export default function App() {
     useEffect(() => { const timer = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(timer); }, []);
 
     const activeJobs = state.jobs.filter(j => j.status !== 'resolved' && j.status !== 'expired');
+    const marketJobs = activeJobs.filter(j => !(j as any).isParentTask && j.reward > 0);
+    const adminRequests = activeJobs.filter(j => (j as any).isParentTask);
+
+    const displayedJobs = isAdmin ? activeJobs : marketJobs;
     const finishedJobs = state.jobs.filter(j => j.status === 'resolved' || j.status === 'expired').reverse();
 
     const monthlyEarnings = useMemo(() => {
@@ -1976,7 +2070,7 @@ export default function App() {
 
         {/* ACTIVE LOTS */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {activeJobs.length === 0 ? (
+          {displayedJobs.length === 0 ? (
             <div style={{ 
                 background: "#FFFFFF", 
                 borderRadius: 24, 
@@ -2500,7 +2594,7 @@ export default function App() {
         {!isMobile && (
           <aside style={styles.sidebar}>
             <div style={styles.sidebarHeader}>
-              <div style={styles.sidebarLogoIcon}>H</div>
+              <img src="/logo.png" alt="HomeOS" style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover" }} />
               <span style={styles.sidebarLogo}>HomeOS</span>
             </div>
 
@@ -2508,7 +2602,7 @@ export default function App() {
               {[
                 { id: "dashboard", label: "Обзор" },
                 { id: "judge", label: isAdmin ? "Баги" : "Мои баги", count: openBugs.length },
-                { id: "market", label: "Биржа", count: state.jobs.filter(j => j.status === 'open' || j.status === 'review').length },
+                { id: "market", label: "Биржа", count: state.jobs.filter(j => (j.status === 'open' || j.status === 'review') && !(j as any).isParentTask).length },
                 { id: "ledger", label: "Ledger" },
                 ...(isAdmin ? [{ id: "settings", label: "Настройки" } as const] : []),
               ].map((n) => (
@@ -2550,9 +2644,10 @@ export default function App() {
         {/* MAIN CONTENT AREA */}
         <div style={isMobile ? { flex: 1, display: "flex", flexDirection: "column" } : styles.mainWrapper}>
           <header style={{ ...styles.header, padding: isMobile ? "0 16px" : "0 32px" }}>
-            <h1 style={styles.headerTitle}>
+            <h1 style={{ ...styles.headerTitle, display: "flex", alignItems: "center", gap: 8 }}>
+              {isMobile && <img src="/logo.png" alt="HomeOS" style={{ width: 28, height: 28, borderRadius: 6, objectFit: "cover" }} />}
               {isMobile ? "HomeOS" : (view === "dashboard" ? "Обзор" : view === "judge" ? "Баги" : view === "ledger" ? "Ledger" : "Выплата")}
-              {isMobile && <span style={{ marginLeft: 8, fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>v2.2</span>}
+              {isMobile && <span style={{ fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>v2.2</span>}
             </h1>
             <div style={styles.headerRight}>
               {isAdmin && !isMobile && <input type="text" placeholder="Поиск..." style={styles.searchBar} />}
@@ -2581,7 +2676,7 @@ export default function App() {
                 { id: "dashboard", label: "Обзор" },
                 { id: "tasks", label: "Задачи", count: state.kitchenDuty === activeUser && !state.kitchenDone ? 1 : 0 },
                 { id: "judge", label: "Баги", count: openBugs.length },
-                { id: "market", label: "Биржа", count: state.jobs.filter(j => j.status === 'open' || j.status === 'review').length },
+                { id: "market", label: "Биржа", count: state.jobs.filter(j => (j.status === 'open' || j.status === 'review') && !(j as any).isParentTask).length },
                 { id: "ledger", label: "Ленту" },
                 ...(isAdmin ? [{ id: "settings", label: "Настр" } as const] : []),
               ].map((t) => (
@@ -2715,6 +2810,48 @@ export default function App() {
               >
                 Отмена
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {requestTaskModal && (
+        <div style={styles.overlay} onClick={() => setRequestTaskModal(false)}>
+          <div className="animate-in zoom-in duration-300" style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>📝 Поручить задачу маме</h3>
+            <div style={styles.formGroup}>
+              <textarea
+                style={styles.textarea}
+                placeholder="Что нужно сделать?"
+                value={requestTaskDesc}
+                onChange={(e) => setRequestTaskDesc(e.target.value)}
+              />
+            </div>
+            <div style={styles.modalActions}>
+              <button style={{ ...styles.cancelBtn, flex: 1 }} onClick={() => setRequestTaskModal(false)}>Отмена</button>
+              <button style={{ ...styles.primaryBtn, flex: 2 }} onClick={() => {
+                if (requestTaskDesc && activeUser) {
+                  const name = state.users[activeUser as 'toma'|'valya']?.name || 'Пользователь';
+                  persist(s => ({
+                    ...s,
+                    jobs: [...s.jobs, {
+                        id: Date.now(),
+                        creator: activeUser as 'toma' | 'valya',
+                        title: `Запрос от ${name}: ${requestTaskDesc}`,
+                        reward: 0,
+                        deadline: new Date(Date.now() + 7 * 24 * 3600000).toISOString(),
+                        status: 'open',
+                        assignee: 'admin' as any,
+                        created: new Date().toISOString(),
+                        // @ts-ignore
+                        isParentTask: true
+                    }]
+                  }));
+                  showToast("Запрос успешно отправлен маме!", "success");
+                  setRequestTaskDesc("");
+                  setRequestTaskModal(false);
+                }
+              }}>Отправить</button>
             </div>
           </div>
         </div>
