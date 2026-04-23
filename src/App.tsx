@@ -4,6 +4,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import { 
   ChevronRight, 
   ChevronDown, 
@@ -238,6 +239,12 @@ export default function App() {
   const [viewPhoto, setViewPhoto] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: "info" | "success" | "warn" | "error" } | null>(null);
   const [tick, setTick] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setIsLoading(false), 2500);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 60000);
@@ -2521,11 +2528,65 @@ export default function App() {
     );
   }
 
+  if (isLoading) {
+    return (
+      <div style={{ ...styles.root, display: "flex", alignItems: "center", justifyContent: "center", background: "#FFFFFF", flexDirection: "column" }}>
+        <motion.div
+          initial={{ scale: 0.8, opacity: 0 }}
+          animate={{ 
+            scale: [0.8, 1.1, 1],
+            opacity: 1,
+            rotate: [0, -5, 5, 0]
+          }}
+          transition={{ duration: 1.5, ease: "easeOut" }}
+          style={{ width: 120, height: 120, marginBottom: 24 }}
+        >
+          <img 
+            src="/src/assets/images/logo.png" 
+            alt="Logo" 
+            style={{ width: "100%", height: "100%", objectFit: "contain" }}
+            referrerPolicy="no-referrer"
+          />
+        </motion.div>
+        <motion.div
+           initial={{ opacity: 0, y: 10 }}
+           animate={{ opacity: 1, y: 0 }}
+           transition={{ delay: 0.8, duration: 0.8 }}
+        >
+          <h1 style={{ ...styles.sidebarLogo, color: "rgba(148, 163, 184, 0.15)", fontSize: 24, letterSpacing: "-1px" }}>HomeOS</h1>
+          <div style={{ display: "flex", gap: 4, justifyContent: "center", marginTop: 8 }}>
+            {[0, 1, 2].map((i) => (
+              <motion.div
+                key={i}
+                animate={{ scale: [1, 1.5, 1], opacity: [0.3, 1, 0.3] }}
+                transition={{ repeat: Infinity, duration: 1, delay: i * 0.2 }}
+                style={{ width: 6, height: 6, background: "#6366F1", borderRadius: "50%", opacity: 0.2 }}
+              />
+            ))}
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
   if (!activeUser) {
     return (
       <div style={{ ...styles.root, display: "flex", alignItems: "center", justifyContent: "center", background: "#F8FAFC" }}>
-        <div style={{ background: "#FFFFFF", padding: 32, borderRadius: 24, boxShadow: "0 10px 40px rgba(0,0,0,0.05)", width: "100%", maxWidth: 360, textAlign: "center" }}>
-          <div style={{ ...styles.sidebarLogoIcon, margin: "0 auto 24px auto", background: "#4F46E5", width: 56, height: 56, borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, color: "#fff", fontWeight: 700 }}>H</div>
+        <div style={{ background: "#FFFFFF", padding: "40px 32px", borderRadius: 32, boxShadow: "0 20px 50px rgba(0,0,0,0.08)", width: "100%", maxWidth: 380, textAlign: "center" }}>
+          <motion.div 
+            initial={{ y: -20, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            transition={{ duration: 0.6 }}
+            style={{ marginBottom: 40 }}
+          >
+            <img 
+              src="/src/assets/images/logo.png" 
+              alt="Logo icon" 
+              style={{ width: 160, height: 160, margin: "0 auto 8px auto", display: "block", objectFit: "contain" }} 
+              referrerPolicy="no-referrer"
+            />
+            <h1 style={{ ...styles.sidebarLogo, color: "rgba(148, 163, 184, 0.2)", fontSize: 32, letterSpacing: "-1.5px" }}>HomeOS</h1>
+          </motion.div>
           
           {authStep === "select" && (
             <div className="animate-in slide-in-from-bottom-2">
@@ -2612,9 +2673,14 @@ export default function App() {
         {/* SIDEBAR (Desktop only) */}
         {!isMobile && (
           <aside style={styles.sidebar}>
-            <div style={styles.sidebarHeader}>
-              <div style={styles.sidebarLogoIcon}>H</div>
-              <span style={styles.sidebarLogo}>HomeOS</span>
+            <div style={{ ...styles.sidebarHeader, padding: "24px 20px" }}>
+              <img 
+                src="/src/assets/images/logo.png" 
+                alt="Logo" 
+                style={{ width: 40, height: 40, objectFit: "contain" }} 
+                referrerPolicy="no-referrer"
+              />
+              <span style={{ ...styles.sidebarLogo, fontSize: 24 }}>HomeOS</span>
             </div>
 
             <nav style={styles.sidebarNav}>
@@ -2664,7 +2730,12 @@ export default function App() {
         <div style={isMobile ? { flex: 1, display: "flex", flexDirection: "column" } : styles.mainWrapper}>
           <header style={{ ...styles.header, padding: isMobile ? "0 16px" : "0 32px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <img src="/icon-512.png" alt="Logo" style={{ width: 32, height: 32, borderRadius: 8 }} />
+              <img 
+                src="/src/assets/images/logo.png" 
+                alt="Logo" 
+                style={{ width: 32, height: 32, objectFit: "contain" }} 
+                referrerPolicy="no-referrer"
+              />
               <h1 style={styles.headerTitle}>
                 {isMobile ? "HomeOS" : (view === "dashboard" ? "Обзор" : view === "judge" ? "Баги" : view === "ledger" ? "Ledger" : "Выплата")}
                 {isMobile && <span style={{ marginLeft: 8, fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>v2.2</span>}
@@ -3193,7 +3264,7 @@ const styles = {
   desktopWrapper: { display: "flex", flex: 1, height: "100vh", overflow: "hidden" as "hidden" },
   sidebar: { width: 260, background: "#0F172A", color: "#FFFFFF", display: "flex", flexDirection: "column" as "column", borderRight: "1px solid #1E293B" },
   sidebarHeader: { padding: "24px", borderBottom: "1px solid #1E293B", display: "flex", alignItems: "center", gap: 12 },
-  sidebarLogo: { fontWeight: 700, fontSize: 18, color: "#FFFFFF", letterSpacing: "-0.5px" },
+  sidebarLogo: { fontWeight: 700, fontSize: 18, color: "rgba(148, 163, 184, 0.4)", letterSpacing: "-0.5px" },
   sidebarLogoIcon: { width: 32, height: 32, background: "#6366F1", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "bold" },
   sidebarNav: { flex: 1, padding: "16px", display: "flex", flexDirection: "column" as "column", gap: 8 },
   sidebarNavBtn: { padding: "10px 16px", borderRadius: 8, border: "none", background: "none", cursor: "pointer", fontSize: 14, fontWeight: 500, color: "#94A3B8", textAlign: "left" as "left", transition: "all 0.2s" },
