@@ -11,7 +11,7 @@ import {
   ShoppingBag, 
   Zap, 
   Utensils, 
-  Bug, 
+  Bug as BugIcon, 
   Trash2, 
   Plus, 
   Search, 
@@ -19,7 +19,12 @@ import {
   Timer, 
   Trophy, 
   History,
-  AlertCircle
+  AlertCircle,
+  LayoutDashboard as DashboardIcon,
+  CheckSquare as TasksIcon,
+  BarChart3 as MarketIcon,
+  Activity as ActivityIcon,
+  Settings as SettingsIcon
 } from "lucide-react";
 
 // ─── TYPES ──────────────────────────────────────────────────────────────────
@@ -120,8 +125,8 @@ const defaultState = (): AppState => {
   return {
     week: monday.toISOString(),
     users: {
-      toma: { name: "Тома", emoji: "🌿", balance: 10.0, gymWallet: 0, totalEarned: 0 },
-      valya: { name: "Валя", emoji: "⚡", balance: 10.0, gymWallet: 0, totalEarned: 0 },
+      toma: { name: "Томочка", emoji: "🌿", balance: 10.0, gymWallet: 0, totalEarned: 0 },
+      valya: { name: "Валечка", emoji: "⚡", balance: 10.0, gymWallet: 0, totalEarned: 0 },
     },
     kitchenDuty: (now.getDay() % 2 === 1) ? "toma" : "valya",
     kitchenDone: false,
@@ -251,6 +256,22 @@ export default function App() {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3000);
   };
+
+  useEffect(() => {
+    // Migrate old names to new ones if they exist in state
+    if (state.users.toma && state.users.toma.name === "Тома") {
+      persist(s => ({
+        ...s,
+        users: { ...s.users, toma: { ...s.users.toma, name: "Томочка" } }
+      }));
+    }
+    if (state.users.valya && state.users.valya.name === "Валя") {
+      persist(s => ({
+        ...s,
+        users: { ...s.users, valya: { ...s.users.valya, name: "Валечка" } }
+      }));
+    }
+  }, [state.users.toma?.name, state.users.valya?.name, persist]);
 
   useEffect(() => {
     const todayStr = today();
@@ -825,46 +846,37 @@ export default function App() {
   };
 
   const doPayout = () => {
-    const toma = state.users.toma;
-    const valya = state.users.valya;
-    const tomaTotal = toma.balance + toma.gymWallet;
-    const valyaTotal = valya.balance + valya.gymWallet;
+    const tomaTotal = weeklyExpected('toma');
+    const valyaTotal = weeklyExpected('valya');
     
     // Determine winner
     let winner = null;
-    if (tomaTotal > valyaTotal) winner = { name: toma.name, emoji: toma.emoji, week: state.week };
-    else if (valyaTotal > tomaTotal) winner = { name: valya.name, emoji: valya.emoji, week: state.week };
+    if (tomaTotal > valyaTotal) winner = { name: state.users.toma.name, emoji: state.users.toma.emoji, week: state.week };
+    else if (valyaTotal > tomaTotal) winner = { name: state.users.valya.name, emoji: state.users.valya.emoji, week: state.week };
 
     persist((s) => ({
       ...s,
-      payouts: [
-        ...s.payouts,
-        {
-          week: s.week,
-          date: new Date().toISOString(),
-          toma: tomaTotal,
-          valya: valyaTotal,
-        },
-      ],
+      payouts: [], // User requested to not clutter history
+      totalPaidOut: (s.totalPaidOut || 0) + tomaTotal + valyaTotal,
       users: {
-        toma: { ...s.users.toma, balance: 10, gymWallet: 0, totalEarned: toma.totalEarned + tomaTotal },
-        valya: { ...s.users.valya, balance: 10, gymWallet: 0, totalEarned: valya.totalEarned + valyaTotal },
+        toma: { ...s.users.toma, balance: 10, gymWallet: 0, totalEarned: s.users.toma.totalEarned + tomaTotal },
+        valya: { ...s.users.valya, balance: 10, gymWallet: 0, totalEarned: s.users.valya.totalEarned + valyaTotal },
       },
       week: new Date().toISOString(),
       weeklyLog: [],
       bugs: [],
+      jobs: [], // Clear all jobs
+      gymLogs: [], // Clear gym logs
       kitchenDone: false,
       kitchenTasks: { "Посудомойка": false, "Столы": false, "Плита": false }, // Reset kitchen tasks
       cleaningDone: { toma: false, valya: false }, // Reset cleaning tasks
       wasteDone: { toma: false, valya: false }, // Reset waste tasks
       wastes: { toma: {}, valya: {} },
       cleaningTasks: { toma: {}, valya: {} },
-      gymLogs: [],
       weeklyWinner: winner,
-      totalPaidOut: s.totalPaidOut + tomaTotal + valyaTotal
     }));
     setPayoutConfirm(false);
-    showToast(`💰 Выплата: Тома ${fmtBalance(tomaTotal)}, Валя ${fmtBalance(valyaTotal)}`, "success");
+    showToast(`💸 ВЫПЛАТА ВЫПОЛНЕНА. НАЧИНАЕМ С ЧИСТОГО ЛИСТА!`, "success");
   };
 
   const openBugs = state.bugs.filter((b) => b.status === "open");
@@ -934,7 +946,7 @@ export default function App() {
     const greeting = getGreeting();
 
     const taskState = state.kitchenTasks || { "Посудомойка": false, "Столы": false, "Плита": false };
-    const tasks = Object.keys(taskState);
+    const tasks = Object.keys(taskState).sort((a, b) => (taskState[a] ? 1 : 0) - (taskState[b] ? 1 : 0));
     const allTasksDone = tasks.length > 0 && tasks.every(t => taskState[t]);
 
     return (
@@ -961,6 +973,43 @@ export default function App() {
             <p style={{ fontSize: 15, color: "#475569", fontWeight: 500, lineHeight: 1.5, maxWidth: "85%" }}>{greeting.text}</p>
           </div>
         </div>
+
+        {!isAdmin && activeUser && (
+          <div style={styles.section}>
+            <h3 style={styles.sectionTitle}>QUICK ACTIONS</h3>
+            <div style={styles.quickActions}>
+              <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#4F46E5", color: "#FFFFFF", borderColor: "#4338CA" }} onClick={() => logGym(activeUser as "toma" | "valya")}>
+                🏋️ Я в зале (+4 €)
+              </button>
+              <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#F0FDF4", color: "#166534", borderColor: "#BBF7D0" }} onClick={() => setJobModal(true)}>
+                💼 Дать работу
+              </button>
+              <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#E0E7FF", color: "#4338CA", borderColor: "#C7D2FE" }} onClick={() => setRequestTaskModal(true)}>
+                📝 Поручить маме
+              </button>
+            </div>
+          </div>
+        )}
+
+        {isAdmin && (
+          <div style={styles.section}>
+            <h3 style={styles.sectionTitle}>ADMIN ACTIONS</h3>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <button style={{ ...styles.quickBtn, flex: 1, minWidth: 120, background: "#FFF1F2", color: "#E11D48", borderColor: "#FECDD3" }} onClick={() => setBugModal(true)}>
+                🐛 Создать баг
+              </button>
+              <button style={{ ...styles.quickBtn, flex: 1, minWidth: 120, background: "#F0FDF4", color: "#166534", borderColor: "#BBF7D0" }} onClick={() => setJobModal(true)}>
+                💼 Дать работу
+              </button>
+              <button style={{ ...styles.quickBtn, flex: 1, minWidth: 120, background: "#FEF3C7", color: "#B45309", borderColor: "#FDE68A" }} onClick={() => setSpendModal(true)}>
+                🍬 Расходы
+              </button>
+              <button style={{ ...styles.quickBtn, flex: 1, minWidth: 120, background: "#F0F9FF", color: "#0284C7", borderColor: "#BAE6FD" }} onClick={() => setPayoutConfirm(true)}>
+                💰 Выплата
+              </button>
+            </div>
+          </div>
+        )}
 
         <div style={{ ...styles.balanceGrid, gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(240px, 1fr))" }}>
           {["toma", "valya"].sort((a, b) => (activeUser === a ? -1 : activeUser === b ? 1 : 0)).map((u) => {
@@ -993,6 +1042,13 @@ export default function App() {
           })}
         </div>
 
+        {isAdmin && (
+          <div style={{ ...styles.card, background: "#EFF6FF", border: "1px solid #DBEAFE", textAlign: "center", padding: "16px 20px" }}>
+            <h3 style={{ fontSize: 13, fontWeight: 700, color: "#2563EB", marginBottom: 4 }}>ВСЕГО ВЫПЛАЧЕНО ЗА ВСЕ ВРЕМЯ</h3>
+            <div style={{ fontSize: 24, fontWeight: 800, color: "#1E293B" }}>{(state.totalPaidOut || 0).toFixed(2)} €</div>
+          </div>
+        )}
+
         {state.weeklyWinner && (
           <div style={{ ...styles.card, background: "#FFFBEB", border: "2px solid #FCD34D" }}>
             <h3 style={styles.sectionTitle}>🏆 Доска почета</h3>
@@ -1020,23 +1076,6 @@ export default function App() {
           </div>
         )}
 
-        {!isAdmin && activeUser && (
-          <div style={styles.section}>
-            <h3 style={styles.sectionTitle}>QUICK ACTIONS</h3>
-            <div style={styles.quickActions}>
-              <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#4F46E5", color: "#FFFFFF", borderColor: "#4338CA" }} onClick={() => logGym(activeUser as "toma" | "valya")}>
-                🏋️ Я в зале (+4 €)
-              </button>
-              <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#F0FDF4", color: "#166534", borderColor: "#BBF7D0" }} onClick={() => setJobModal(true)}>
-                💼 Дать работу
-              </button>
-              <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#E0E7FF", color: "#4338CA", borderColor: "#C7D2FE" }} onClick={() => setRequestTaskModal(true)}>
-                📝 Поручить маме
-              </button>
-            </div>
-          </div>
-        )}
-
         {isAdmin && pendingGym.length > 0 && (
           <div style={styles.section}>
             <h3 style={styles.sectionTitle}>ЗАПРОСЫ НА ВЫПЛАТУ (ЗАЛ)</h3>
@@ -1048,7 +1087,7 @@ export default function App() {
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <div>
                         <div style={{ fontWeight: 700, color: "#1E293B" }}>{state.users[log.user].name}</div>
-                        <div style={{ fontSize: 12, color: "#64748B" }}>Тренировка в зале · +3.00 €</div>
+                        <div style={{ fontSize: 12, color: "#64748B" }}>Тренировка в зале · +4.00 €</div>
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
                         <button 
@@ -1071,26 +1110,6 @@ export default function App() {
             </div>
           </div>
         )}
-
-        {isAdmin && (
-          <div style={styles.section}>
-            <h3 style={styles.sectionTitle}>ADMIN ACTIONS</h3>
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-              <button style={{ ...styles.quickBtn, flex: 1, minWidth: 120, background: "#FFF1F2", color: "#E11D48", borderColor: "#FECDD3" }} onClick={() => setBugModal(true)}>
-                🐛 Создать баг
-              </button>
-              <button style={{ ...styles.quickBtn, flex: 1, minWidth: 120, background: "#F0FDF4", color: "#166534", borderColor: "#BBF7D0" }} onClick={() => setJobModal(true)}>
-                💼 Дать работу
-              </button>
-              <button style={{ ...styles.quickBtn, flex: 1, minWidth: 120, background: "#FEF3C7", color: "#B45309", borderColor: "#FDE68A" }} onClick={() => setSpendModal(true)}>
-                🍬 Расходы
-              </button>
-              <button style={{ ...styles.quickBtn, flex: 1, minWidth: 120, background: "#F0F9FF", color: "#0284C7", borderColor: "#BAE6FD" }} onClick={() => setPayoutConfirm(true)}>
-                💰 Выплата
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     );
   }
@@ -1098,7 +1117,7 @@ export default function App() {
   function Tasks() {
     const isDuty = state.kitchenDuty === activeUser;
     const taskState = state.kitchenTasks || { "Посудомойка": false, "Столы": false, "Плита": false };
-    const tasks = Object.keys(taskState);
+    const tasks = Object.keys(taskState).sort((a, b) => (taskState[a] ? 1 : 0) - (taskState[b] ? 1 : 0));
     const [newTaskTitle, setNewTaskTitle] = useState("");
     const [newWasteTask, setNewWasteTask] = useState<{ user: "toma" | "valya", title: string } | null>(null);
     const [newCleaningTask, setNewCleaningTask] = useState<{ user: "toma" | "valya", title: string } | null>(null);
@@ -1200,51 +1219,6 @@ export default function App() {
                     <div style={{ fontSize: 64, marginBottom: 16 }}>🛋️</div>
                     <h3 style={{ fontSize: 20, fontWeight: 800, color: "#1E293B", marginBottom: 8 }}>Никаких задач!</h3>
                     <p style={{ color: "#64748B", fontSize: 15 }}>Твое время — твои правила. Отдыхай, ты это заслужил(а)! ✨</p>
-                </div>
-            )}
-
-            {/* ADMIN REQUESTS (For Admin only) */}
-            {isAdmin && adminRequests.length > 0 && (
-                <div style={{ marginBottom: 24 }}>
-                    <h3 style={{ fontSize: 16, fontWeight: 800, color: "#92400E", marginBottom: 12 }}>⚡ Запросы от детей ({adminRequests.length})</h3>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                        {[...adminRequests].sort((a,b) => (a.status === 'resolved' ? 1 : 0) - (b.status === 'resolved' ? 1 : 0)).map(job => (
-                            <div key={job.id} style={{ background: job.status === 'resolved' ? "#F1F5F9" : "#FFFBEB", border: job.status === 'resolved' ? "1px solid #CBD5E1" : "1px solid #FCD34D", borderRadius: 16, padding: 16 }}>
-                                <p style={{ fontWeight: 600, color: job.status === 'resolved' ? "#64748B" : "#78350F", textDecoration: job.status === 'resolved' ? "line-through" : "none" }}>{job.status === 'resolved' && "✅ "}{job.title}</p>
-                                {job.status !== 'resolved' && (
-                                    <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-                                        <button style={{ ...styles.primaryBtn, background: "#10B981" }} onClick={() => {
-                                            persist(s => ({
-                                                ...s,
-                                                jobs: s.jobs.map(j => j.id === job.id ? { ...j, status: 'resolved' } : j)
-                                            }));
-                                            showToast("Задача отмечена как выполненная!", "success");
-                                        }}>Выполнено</button>
-                                        <button style={{ ...styles.cancelBtn }} onClick={() => deleteJob(job.id)}>Удалить</button>
-                                    </div>
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
-
-            {/* MY REQUESTS (For Children only) */}
-            {!isAdmin && activeUser && adminRequests.filter(j => j.creator === activeUser).length > 0 && (
-                <div style={{ marginBottom: 24 }}>
-                    <h3 style={{ fontSize: 16, fontWeight: 800, color: "#4F46E5", marginBottom: 12 }}>📤 Мои запросы к маме</h3>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                        {[...adminRequests].filter(j => j.creator === activeUser).sort((a,b) => (a.status === 'resolved' ? 1 : 0) - (b.status === 'resolved' ? 1 : 0)).map(job => (
-                            <div key={job.id} style={{ background: job.status === 'resolved' ? "#F8FAFC" : "#EEF2FF", border: job.status === 'resolved' ? "1px solid #CBD5E1" : "1px solid #C7D2FE", borderRadius: 16, padding: 16 }}>
-                                <p style={{ fontWeight: 600, color: job.status === 'resolved' ? "#64748B" : "#4338CA", textDecoration: job.status === 'resolved' ? "line-through" : "none" }}>{job.status === 'resolved' && "✅ "}{job.title}</p>
-                                {job.status !== 'resolved' && (
-                                    <div style={{ marginTop: 8 }}>
-                                        <button style={{ ...styles.cancelBtn }} onClick={() => deleteJob(job.id)}>Удалить запрос</button>
-                                    </div>
-                                )}
-                            </div>
-                        ))}
-                    </div>
                 </div>
             )}
 
@@ -1356,7 +1330,7 @@ export default function App() {
                     <div style={{ padding: "16px 24px" }}>
                         {usersToShowWaste.map(u => {
                             const uTasks = state.wastes[u] || {};
-                            const taskNames = Object.keys(uTasks);
+                            const taskNames = Object.keys(uTasks).sort((a, b) => (uTasks[a] ? 1 : 0) - (uTasks[b] ? 1 : 0));
                             
                             return (
                                 <div key={u} style={{ marginBottom: 24 }}>
@@ -1540,7 +1514,7 @@ export default function App() {
                     <div style={{ padding: "16px 24px" }}>
                         {usersToShowWaste.map(u => {
                             const uTasks = state.cleaningTasks[u] || {};
-                            const taskNames = Object.keys(uTasks);
+                            const taskNames = Object.keys(uTasks).sort((a, b) => (uTasks[a] ? 1 : 0) - (uTasks[b] ? 1 : 0));
                             
                             return (
                                 <div key={u} style={{ marginBottom: 24 }}>
@@ -1702,6 +1676,51 @@ export default function App() {
                     </div>
                 </div>
             )}
+
+            {/* ADMIN REQUESTS (For Admin only) - AT BOTTOM */}
+            {isAdmin && adminRequests.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                    <h3 style={{ fontSize: 16, fontWeight: 800, color: "#92400E", marginBottom: 12 }}>⚡ Запросы от детей ({adminRequests.length})</h3>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                        {[...adminRequests].sort((a,b) => (a.status === 'resolved' ? 1 : 0) - (b.status === 'resolved' ? 1 : 0)).map(job => (
+                            <div key={job.id} style={{ background: job.status === 'resolved' ? "#F1F5F9" : "#FFFBEB", border: job.status === 'resolved' ? "1px solid #CBD5E1" : "1px solid #FCD34D", borderRadius: 16, padding: 16 }}>
+                                <p style={{ fontWeight: 600, color: job.status === 'resolved' ? "#64748B" : "#78350F", textDecoration: job.status === 'resolved' ? "line-through" : "none" }}>{job.status === 'resolved' && "✅ "}{job.title}</p>
+                                {job.status !== 'resolved' && (
+                                    <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                                        <button style={{ ...styles.primaryBtn, background: "#10B981" }} onClick={() => {
+                                            persist(s => ({
+                                                ...s,
+                                                jobs: s.jobs.map(j => j.id === job.id ? { ...j, status: 'resolved' } : j)
+                                            }));
+                                            showToast("Задача отмечена как выполненная!", "success");
+                                        }}>Выполнено</button>
+                                        <button style={{ ...styles.cancelBtn }} onClick={() => deleteJob(job.id)}>Удалить</button>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* MY REQUESTS (For Children only) - AT BOTTOM */}
+            {!isAdmin && activeUser && adminRequests.filter(j => j.creator === activeUser).length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                    <h3 style={{ fontSize: 16, fontWeight: 800, color: "#4F46E5", marginBottom: 12 }}>📤 Мои запросы к маме</h3>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                        {[...adminRequests].filter(j => j.creator === activeUser).sort((a,b) => (a.status === 'resolved' ? 1 : 0) - (b.status === 'resolved' ? 1 : 0)).map(job => (
+                            <div key={job.id} style={{ background: job.status === 'resolved' ? "#F8FAFC" : "#EEF2FF", border: job.status === 'resolved' ? "1px solid #CBD5E1" : "1px solid #C7D2FE", borderRadius: 16, padding: 16 }}>
+                                <p style={{ fontWeight: 600, color: job.status === 'resolved' ? "#64748B" : "#4338CA", textDecoration: job.status === 'resolved' ? "line-through" : "none" }}>{job.status === 'resolved' && "✅ "}{job.title}</p>
+                                {job.status !== 'resolved' && (
+                                    <div style={{ marginTop: 8 }}>
+                                        <button style={{ ...styles.cancelBtn }} onClick={() => deleteJob(job.id)}>Удалить запрос</button>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
         </div>
     );
   }
@@ -1759,8 +1778,8 @@ export default function App() {
                             onChange={(e) => updateBugTarget(bug.id, e.target.value as any)}
                           >
                             <option value="none" disabled>Сменить...</option>
-                            <option value="toma">Тома</option>
-                            <option value="valya">Валя</option>
+                            <option value="toma">Томочка</option>
+                            <option value="valya">Валечка</option>
                           </select>
                         )}
                       </div>
@@ -1975,8 +1994,8 @@ export default function App() {
             {isAdmin && (
               <div style={styles.segmented}>
                 <button style={{ ...styles.segBtn, ...(filterUser === "all" ? styles.segBtnActive : {}) }} onClick={() => setFilterUser("all")}>Все</button>
-                <button style={{ ...styles.segBtn, ...(filterUser === "toma" ? styles.segBtnActive : {}) }} onClick={() => setFilterUser("toma")}>Тома</button>
-                <button style={{ ...styles.segBtn, ...(filterUser === "valya" ? styles.segBtnActive : {}) }} onClick={() => setFilterUser("valya")}>Валя</button>
+                <button style={{ ...styles.segBtn, ...(filterUser === "toma" ? styles.segBtnActive : {}) }} onClick={() => setFilterUser("toma")}>Томочка</button>
+                <button style={{ ...styles.segBtn, ...(filterUser === "valya" ? styles.segBtnActive : {}) }} onClick={() => setFilterUser("valya")}>Валечка</button>
               </div>
             )}
           </div>
@@ -2026,7 +2045,7 @@ export default function App() {
     const marketJobs = activeJobs.filter(j => !(j as any).isParentTask && j.reward > 0);
     const adminRequests = activeJobs.filter(j => (j as any).isParentTask);
 
-    const displayedJobs = isAdmin ? activeJobs : marketJobs;
+    const displayedJobs = marketJobs;
     const finishedJobs = state.jobs.filter(j => j.status === 'resolved' || j.status === 'expired').reverse();
 
     const monthlyEarnings = useMemo(() => {
@@ -2045,7 +2064,7 @@ export default function App() {
     const getJobIcon = (title: string, type?: string) => {
         const t = title.toLowerCase();
         if (t.includes('кухн') || t.includes('посуд') || t.includes('плит')) return <Utensils size={18} color="#2563EB" />;
-        if (t.includes('баг') || t.includes('ошибк') || t.includes('исправ')) return <Bug size={18} color="#2563EB" />;
+        if (t.includes('баг') || t.includes('ошибк') || t.includes('исправ')) return <BugIcon size={18} color="#2563EB" />;
         if (t.includes('мусор') || t.includes('вынос')) return <Trash2 size={18} color="#2563EB" />;
         return <Zap size={18} color="#2563EB" />;
     };
@@ -2386,7 +2405,7 @@ export default function App() {
     );
   }
 
-  function Settings() {
+  function SettingsPage() {
     const [confirmReset, setConfirmReset] = useState(false);
     const [confirmMaster, setConfirmMaster] = useState(false);
 
@@ -2397,16 +2416,16 @@ export default function App() {
           <div style={styles.card}>
             {[
               { id: "admin", label: "Администратор", desc: "Главный доступ к приложению" },
-              { id: "toma", label: "Тома", desc: `PIN-код для профиля ${state.users.toma.name}` },
-              { id: "valya", label: "Валя", desc: `PIN-код для профиля ${state.users.valya.name}` },
+              { id: "toma", label: "Томочка", desc: `PIN-код для профиля ${state.users.toma.name}` },
+              { id: "valya", label: "Валечка", desc: `PIN-код для профиля ${state.users.valya.name}` },
             ].map((usr, i, arr) => (
-              <div key={usr.id} style={{ ...styles.dutyCard, borderBottom: i === arr.length - 1 ? "none" : "1px solid #F1F5F9" }}>
-                <div>
-                  <p style={{ fontWeight: 500 }}>{usr.label}</p>
+              <div key={usr.id} style={{ ...styles.dutyCard, padding: "16px", borderBottom: i === arr.length - 1 ? "none" : "1px solid #F1F5F9" }}>
+                <div style={{ flex: 1, minWidth: isMobile ? "100%" : "auto", marginBottom: isMobile ? 8 : 0 }}>
+                  <p style={{ fontWeight: 600 }}>{usr.label}</p>
                   <p style={{ fontSize: 12, color: "#64748B" }}>{usr.desc}</p>
                 </div>
                 <button 
-                  style={{ ...styles.primaryBtn, background: "#F1F5F9", color: "#475569" }}
+                  style={{ ...styles.primaryBtn, background: "#F1F5F9", color: "#475569", width: isMobile ? "100%" : "auto" }}
                   onClick={() => {
                     const newPin = window.prompt(`Введите новый 4-значный PIN для ${usr.label}:`, state.pins[usr.id]);
                     if (newPin && /^\d{4}$/.test(newPin)) {
@@ -2425,15 +2444,15 @@ export default function App() {
         </div>
 
         <div style={styles.section}>
-          <h3 style={styles.sectionTitle}>Завершение финансового периода</h3>
+          <h3 style={styles.sectionTitle}>Завершение периода</h3>
           <div style={styles.card}>
-            <div style={{ padding: 24, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
+            <div style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
                 <p style={{ fontWeight: 600 }}>Выполнить протокол выплаты</p>
-                <p style={{ fontSize: 12, color: "#64748B" }}>Закрывает текущую книгу и сбрасывает балансы для всех участников.</p>
+                <p style={{ fontSize: 12, color: "#64748B" }}>Закрывает книгу и обнуляет балансы.</p>
               </div>
-              <button style={{ ...styles.primaryBtn, padding: "12px 24px" }} onClick={() => setPayoutConfirm(true)}>
-                Начать выплату
+              <button style={{ ...styles.primaryBtn, width: isMobile ? "100%" : "auto" }} onClick={() => setPayoutConfirm(true)}>
+                Выплата
               </button>
             </div>
           </div>
@@ -2644,10 +2663,13 @@ export default function App() {
         {/* MAIN CONTENT AREA */}
         <div style={isMobile ? { flex: 1, display: "flex", flexDirection: "column" } : styles.mainWrapper}>
           <header style={{ ...styles.header, padding: isMobile ? "0 16px" : "0 32px" }}>
-            <h1 style={styles.headerTitle}>
-              {isMobile ? "HomeOS" : (view === "dashboard" ? "Обзор" : view === "judge" ? "Баги" : view === "ledger" ? "Ledger" : "Выплата")}
-              {isMobile && <span style={{ marginLeft: 8, fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>v2.2</span>}
-            </h1>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <img src="/icon-512.png" alt="Logo" style={{ width: 32, height: 32, borderRadius: 8 }} />
+              <h1 style={styles.headerTitle}>
+                {isMobile ? "HomeOS" : (view === "dashboard" ? "Обзор" : view === "judge" ? "Баги" : view === "ledger" ? "Ledger" : "Выплата")}
+                {isMobile && <span style={{ marginLeft: 8, fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>v2.2</span>}
+              </h1>
+            </div>
             <div style={styles.headerRight}>
               {isAdmin && !isMobile && <input type="text" placeholder="Поиск..." style={styles.searchBar} />}
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -2668,51 +2690,93 @@ export default function App() {
             </div>
           </header>
 
-          {/* Top Tabs (Mobile only) */}
-          {isMobile && (
-            <div style={{ display: "flex", background: "#fff", borderBottom: "1px solid #E2E8F0", position: "sticky", top: 0, zIndex: 10 }}>
-              {[
-                { id: "dashboard", label: "Обзор" },
-                { id: "tasks", label: "Задачи", count: state.kitchenDuty === activeUser && !state.kitchenDone ? 1 : 0 },
-                { id: "judge", label: "Баги", count: openBugs.length },
-                { id: "market", label: "Биржа", count: state.jobs.filter(j => (j.status === 'open' || j.status === 'review') && !(j as any).isParentTask).length },
-                { id: "ledger", label: "Ленту" },
-                ...(isAdmin ? [{ id: "settings", label: "Настр" } as const] : []),
-              ].map((t) => (
-                <button
-                  key={t.id}
-                  style={{
-                    flex: 1,
-                    padding: "14px 4px",
-                    border: "none",
-                    background: "none",
-                    fontSize: 12,
-                    fontWeight: 700,
-                    color: view === t.id ? "#4F46E5" : "#64748B",
-                    borderBottom: view === t.id ? "3px solid #4F46E5" : "3px solid transparent",
-                    transition: "all 0.2s",
-                    display: "flex",
-                    justifyContent: "center",
-                    alignItems: "center",
-                    gap: 4
-                  }}
-                  onClick={() => setView(t.id as any)}
-                >
-                  {t.label}
-                  {t.count ? <span style={{ background: "#EF4444", color: "#fff", borderRadius: 10, padding: "0 6px", fontSize: 10 }}>{t.count}</span> : null}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <main style={{ ...styles.main, padding: isMobile ? "16px" : "32px" }}>
+          <main style={{ ...styles.main, padding: isMobile ? "16px 16px 80px 16px" : "32px" }}>
             {view === "dashboard" && <Dashboard />}
             {view === "tasks" && <Tasks />}
             {view === "judge" && <Judge />}
             {view === "market" && <Market />}
             {view === "ledger" && <Ledger />}
-            {view === "settings" && isAdmin && <Settings />}
+            {view === "settings" && isAdmin && <SettingsPage />}
           </main>
+
+          {/* Bottom Navigation Bar (Mobile only) */}
+          {isMobile && (
+            <div style={{ 
+              position: "fixed", 
+              bottom: 0, 
+              left: 0, 
+              right: 0, 
+              height: 60, 
+              background: "#FFFFFF", 
+              borderTop: "1px solid #E2E8F0", 
+              display: "flex", 
+              alignItems: "center", 
+              justifyContent: "space-around", 
+              zIndex: 1000,
+              boxShadow: "0 -2px 10px rgba(0,0,0,0.05)",
+              paddingBottom: "env(safe-area-inset-bottom)"
+            }}>
+              {[
+                { id: "dashboard", icon: DashboardIcon, label: "Обзор" },
+                { id: "tasks", icon: TasksIcon, label: "Задачи", count: state.kitchenDuty === activeUser && !state.kitchenDone ? 1 : 0 },
+                { id: "judge", icon: BugIcon, label: "Баги", count: openBugs.length },
+                { id: "market", icon: MarketIcon, label: "Биржа", count: state.jobs.filter(j => (j.status === 'open' || j.status === 'review') && !(j as any).isParentTask).length },
+                { id: "ledger", icon: ActivityIcon, label: "Лента" },
+                ...(isAdmin ? [{ id: "settings", icon: SettingsIcon, label: "Настр" } as const] : []),
+              ].map((item) => {
+                const Icon = item.icon;
+                const active = view === item.id;
+                return (
+                  <div
+                    key={item.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setView(item.id as any)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        setView(item.id as any);
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 2,
+                      border: "none",
+                      background: "none",
+                      color: active ? "#6366F1" : "#94A3B8",
+                      transition: "all 0.2s",
+                      position: "relative",
+                      minWidth: 0,
+                      padding: "4px 0",
+                      cursor: "pointer"
+                    }}
+                  >
+                    <Icon size={20} color={active ? "#6366F1" : "#94A3B8"} strokeWidth={active ? 2.5 : 2} />
+                    <span style={{ fontSize: 9, fontWeight: active ? 700 : 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", width: "100%", textAlign: "center" }}>{item.label}</span>
+                    {item.count ? (
+                      <span style={{ 
+                        position: "absolute", 
+                        top: 2, 
+                        right: "15%", 
+                        background: "#EF4444", 
+                        color: "#fff", 
+                        borderRadius: 10, 
+                        padding: "0 4px", 
+                        fontSize: 8,
+                        fontWeight: 700,
+                        border: "1.5px solid #fff"
+                      }}>
+                        {item.count}
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
@@ -2865,8 +2929,8 @@ export default function App() {
               <div style={styles.segmented}>
                 {[
                   { id: "none", label: "Пусть решат сами" },
-                  { id: "toma", label: "Тома" },
-                  { id: "valya", label: "Валя" }
+                  { id: "toma", label: "Томочка" },
+                  { id: "valya", label: "Валечка" }
                 ].map((o) => (
                   <button
                     key={o.id}
@@ -3175,8 +3239,8 @@ const styles = {
   td: { padding: "12px 16px", fontSize: 13, color: "#475569" },
   tdBold: { fontWeight: 500, color: "#0F172A" },
 
-  dutyCard: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 24px", borderBottom: "1px solid #F1F5F9" },
-  dutyLeft: { display: "flex", gap: 16, alignItems: "center" },
+  dutyCard: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 24px", borderBottom: "1px solid #F1F5F9", gap: 12, flexWrap: "wrap" as "wrap" },
+  dutyLeft: { display: "flex", gap: 12, alignItems: "center", flex: 1, minWidth: 200 },
   dutyEmoji: { width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: "#F1F5F9", borderRadius: 8, fontSize: 18 },
   dutyName: { fontSize: 14, fontWeight: 500, color: "#0F172A" },
   dutySub: { fontSize: 12, color: "#64748B" },
