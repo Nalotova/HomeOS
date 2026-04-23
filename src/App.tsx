@@ -2542,7 +2542,7 @@ export default function App() {
           style={{ width: 120, height: 120, marginBottom: 24 }}
         >
           <img 
-            src="/src/assets/images/logo.png" 
+            src="/logo.png" 
             alt="Logo" 
             style={{ width: "100%", height: "100%", objectFit: "contain" }}
             referrerPolicy="no-referrer"
@@ -2580,7 +2580,7 @@ export default function App() {
             style={{ marginBottom: 40 }}
           >
             <img 
-              src="/src/assets/images/logo.png" 
+              src="/logo.png" 
               alt="Logo icon" 
               style={{ width: 160, height: 160, margin: "0 auto 8px auto", display: "block", objectFit: "contain" }} 
               referrerPolicy="no-referrer"
@@ -2675,7 +2675,7 @@ export default function App() {
           <aside style={styles.sidebar}>
             <div style={{ ...styles.sidebarHeader, padding: "24px 20px" }}>
               <img 
-                src="/src/assets/images/logo.png" 
+                src="/logo.png" 
                 alt="Logo" 
                 style={{ width: 40, height: 40, objectFit: "contain" }} 
                 referrerPolicy="no-referrer"
@@ -2731,7 +2731,7 @@ export default function App() {
           <header style={{ ...styles.header, padding: isMobile ? "0 16px" : "0 32px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <img 
-                src="/src/assets/images/logo.png" 
+                src="/logo.png" 
                 alt="Logo" 
                 style={{ width: 32, height: 32, objectFit: "contain" }} 
                 referrerPolicy="no-referrer"
