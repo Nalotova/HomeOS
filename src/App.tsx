@@ -2594,7 +2594,7 @@ export default function App() {
         {!isMobile && (
           <aside style={styles.sidebar}>
             <div style={styles.sidebarHeader}>
-              <img src="/logo.png" alt="HomeOS" style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover" }} />
+              <div style={styles.sidebarLogoIcon}>H</div>
               <span style={styles.sidebarLogo}>HomeOS</span>
             </div>
 
@@ -2644,10 +2644,9 @@ export default function App() {
         {/* MAIN CONTENT AREA */}
         <div style={isMobile ? { flex: 1, display: "flex", flexDirection: "column" } : styles.mainWrapper}>
           <header style={{ ...styles.header, padding: isMobile ? "0 16px" : "0 32px" }}>
-            <h1 style={{ ...styles.headerTitle, display: "flex", alignItems: "center", gap: 8 }}>
-              {isMobile && <img src="/logo.png" alt="HomeOS" style={{ width: 28, height: 28, borderRadius: 6, objectFit: "cover" }} />}
+            <h1 style={styles.headerTitle}>
               {isMobile ? "HomeOS" : (view === "dashboard" ? "Обзор" : view === "judge" ? "Баги" : view === "ledger" ? "Ledger" : "Выплата")}
-              {isMobile && <span style={{ fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>v2.2</span>}
+              {isMobile && <span style={{ marginLeft: 8, fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>v2.2</span>}
             </h1>
             <div style={styles.headerRight}>
               {isAdmin && !isMobile && <input type="text" placeholder="Поиск..." style={styles.searchBar} />}
