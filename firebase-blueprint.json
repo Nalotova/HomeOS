@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "AppState": {
+      "title": "Application State",
+      "description": "Global application state including users, tasks, bugs, and logs.",
+      "type": "object",
+      "properties": {
+        "week": { "type": "string" },
+        "users": { "type": "object" },
+        "kitchenDuty": { "type": "string" },
+        "kitchenDone": { "type": "boolean" },
+        "kitchenTasks": { "type": "object" },
+        "kitchenDeadline": { "type": "string" },
+        "monthlyZones": { "type": "object" },
+        "wastes": { "type": "object" },
+        "wasteDone": { "type": "object" },
+        "cleaningTasks": { "type": "object" },
+        "cleaningDone": { "type": "object" },
+        "bugs": { "type": "array" },
+        "jobs": { "type": "array" },
+        "gymLogs": { "type": "array" },
+        "weeklyLog": { "type": "array" },
+        "payouts": { "type": "array" },
+        "lastKitchenRotation": { "type": "string" },
+        "lastMonthlyRotation": { "type": "string" },
+        "lastBugTarget": { "type": "string" },
+        "pins": { "type": "object" },
+        "weeklyWinner": { "type": "object" },
+        "totalPaidOut": { "type": "number" }
+      }
+    }
+  },
+  "firestore": {
+    "state/current": {
+      "schema": "AppState",
+      "description": "The current shared state of the application."
+    }
+  }
+}

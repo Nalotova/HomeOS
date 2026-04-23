@@ -25,8 +25,69 @@ import {
   CheckSquare as TasksIcon,
   BarChart3 as MarketIcon,
   Activity as ActivityIcon,
-  Settings as SettingsIcon
+  Settings as SettingsIcon,
+  RefreshCw
 } from "lucide-react";
+import { initializeApp } from 'firebase/app';
+import { getFirestore, doc, onSnapshot, setDoc, getDocFromServer } from 'firebase/firestore';
+import firebaseConfig from '../firebase-applet-config.json';
+
+// ─── FIREBASE SETUP ────────────────────────────────────────────────────────
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+const APP_VERSION = "2.3.2";
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: 'create' | 'update' | 'delete' | 'list' | 'get' | 'write';
+  path: string | null;
+}
+
+const handleFirestoreError = (err: any, type: FirestoreErrorInfo['operationType'], path: string | null = null) => {
+  console.error(`Firestore Error [${type}] at ${path}:`, err);
+  const info: FirestoreErrorInfo = {
+    error: err.message || "Unknown error",
+    operationType: type,
+    path
+  };
+  // Detailed feedback for 1MB limit which is common with base64 images
+  if (err.message?.includes("too large") || err.code === "resource-exhausted") {
+    return "Файл слишком большой для сохранения (лимит 1MB). Попробуйте сжать изображение.";
+  }
+  return "Ошибка синхронизации данных";
+};
+
+// Image compression helper to keep AppState < 1MB
+const compressImage = (base64: string, maxWidth = 800, maxHeight = 800, quality = 0.7): Promise<string> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = base64;
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width = Math.round((width * maxHeight) / height);
+          height = maxHeight;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx?.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+  });
+};
 
 // ─── TYPES ──────────────────────────────────────────────────────────────────
 interface User {
@@ -114,9 +175,7 @@ interface AppState {
   totalPaidOut: number;
 }
 
-// ─── STORAGE HELPERS ────────────────────────────────────────────────────────
-const STORAGE_KEY = "homeos_v2";
-
+// ─── UTILS ────────────────────────────────────────────────────────
 const defaultState = (): AppState => {
   const now = new Date();
   const monday = new Date(now);
@@ -158,38 +217,6 @@ const defaultState = (): AppState => {
   };
 };
 
-function loadState(): AppState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (!parsed.pins) {
-        parsed.pins = { admin: "0000", toma: "1111", valya: "2222" };
-      }
-      if (!parsed.jobs) {
-        parsed.jobs = [];
-      }
-      if (!parsed.wasteDone) {
-        parsed.wasteDone = { toma: false, valya: false };
-      }
-      if (!parsed.cleaningTasks) {
-        parsed.cleaningTasks = { toma: {}, valya: {} };
-      }
-      if (!parsed.cleaningDone) {
-        parsed.cleaningDone = { toma: false, valya: false };
-      }
-      return parsed;
-    }
-  } catch {}
-  return defaultState();
-}
-
-function saveState(s: AppState) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
-  } catch {}
-}
-
 const fmtBalance = (n: number) => `${n.toFixed(2)} €`;
 const today = () => new Date().toDateString();
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -214,7 +241,9 @@ function useIsMobile() {
 
 export default function App() {
   const isMobile = useIsMobile();
-  const [state, setState] = useState<AppState>(loadState);
+  const [state, setState] = useState<AppState>(defaultState());
+  const [hasSynced, setHasSynced] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(true);
   const [view, setView] = useState<"dashboard" | "judge" | "ledger" | "settings" | "market">("dashboard");
   const [activeUser, setActiveUser] = useState<"toma" | "valya" | "admin" | null>(() => {
     return (localStorage.getItem("familyAuthToken") as "toma" | "valya" | "admin" | null) || null;
@@ -247,17 +276,49 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 60000);
+    const id = setInterval(() => setTick((t) => t + 1), 60 * 1000);
     return () => clearInterval(id);
   }, []);
 
-  const persist = useCallback((updater: AppState | ((prev: AppState) => AppState)) => {
+  const persist = useCallback((updater: AppState | ((prev: AppState) => AppState), forceServerUpdate = true) => {
+    if (forceServerUpdate && !hasSynced) {
+        console.warn("Persist ignored: cloud sync not ready.");
+        return;
+    }
     setState((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      saveState(next);
+      if (forceServerUpdate) {
+        setDoc(doc(db, "state", "current"), next).catch(err => {
+            const msg = handleFirestoreError(err, 'write', 'state/current');
+            showToast(msg, "error");
+        });
+      }
       return next;
     });
-  }, []);
+  }, [hasSynced]);
+
+  useEffect(() => {
+    console.log(`HomeOS v${APP_VERSION} initialized. Syncing Firestore...`);
+    setIsSyncing(true);
+    const unsubscribe = onSnapshot(doc(db, "state", "current"), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data() as AppState;
+        setState(data);
+        console.log("State synced from cloud");
+      } else {
+        console.warn("No cloud state found. Initializing new shared database...");
+        const initial = defaultState();
+        persist(initial);
+      }
+      setHasSynced(true);
+      setIsSyncing(false);
+    }, (err) => {
+        showToast("Ошибка соединения с облаком", "error");
+        console.error(handleFirestoreError(err, 'get', 'state/current'));
+    });
+
+    return () => unsubscribe();
+  }, [persist]);
 
   const showToast = (msg: string, type: "info" | "success" | "warn" | "error" = "info") => {
     setToast({ msg, type });
@@ -265,6 +326,7 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!hasSynced) return;
     // Migrate old names to new ones if they exist in state
     if (state.users.toma && state.users.toma.name === "Тома") {
       persist(s => ({
@@ -278,9 +340,10 @@ export default function App() {
         users: { ...s.users, valya: { ...s.users.valya, name: "Валечка" } }
       }));
     }
-  }, [state.users.toma?.name, state.users.valya?.name, persist]);
+  }, [state.users.toma?.name, state.users.valya?.name, persist, hasSynced]);
 
   useEffect(() => {
+    if (!hasSynced) return;
     const todayStr = today();
     const day = new Date().getDay();
     const expectedDuty = (day % 2 === 1) ? "toma" : "valya";
@@ -387,6 +450,7 @@ export default function App() {
   }, [state.lastKitchenRotation, state.kitchenDuty, state.week, state.wastes, state.monthlyZones, state.lastMonthlyRotation, persist]);
 
   useEffect(() => {
+    if (!hasSynced) return;
     const now = Date.now();
     
     // Kitchen Penalties
@@ -614,7 +678,15 @@ export default function App() {
     showToast(`Записано: ${state.users[u].name} - ${fmtBalance(amount)}`, "info");
   };
 
+  const createLog = (user: string, event: WeeklyLogEntry['event'], delta: number, note?: string) => {
+    persist(s => ({
+      ...s,
+      weeklyLog: [...s.weeklyLog, { date: todayISO(), user, event, delta, note }]
+    }));
+  };
+
   const createBug = () => {
+    if (!hasSynced) return;
     const now = Date.now();
     const hrs = parseInt(bugForm.hours) || 0;
     const mins = parseInt(bugForm.minutes) || 0;
@@ -667,10 +739,11 @@ export default function App() {
     showToast("Отправлено на проверку администратору", "success");
   };
 
-  const attachResolutionPhoto = (bugId: number, base64: string) => {
+  const attachResolutionPhoto = async (bugId: number, base64: string) => {
+    const compressed = await compressImage(base64);
     persist((s) => ({
       ...s,
-      bugs: s.bugs.map((b) => (b.id === bugId ? { ...b, resolutionPhoto: base64 } : b)),
+      bugs: s.bugs.map((b) => (b.id === bugId ? { ...b, resolutionPhoto: compressed } : b)),
     }));
     showToast("📸 Фото успешно прикреплено", "info");
   };
@@ -958,6 +1031,38 @@ export default function App() {
 
     return (
       <div className="animate-in slide-in-from-bottom-3 duration-300" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+        {isAdmin && pendingGym.length > 0 && (
+          <div className="animate-in fade-in slide-in-from-top-2 duration-500" style={{ 
+            background: "#FFFBEB", 
+            padding: "16px 20px", 
+            borderRadius: 20, 
+            border: "2px solid #F59E0B",
+            display: "flex",
+            alignItems: "center",
+            gap: 16,
+            marginBottom: 8,
+            boxShadow: "0 4px 12px rgba(245, 158, 11, 0.15)"
+          }}>
+            <div style={{ fontSize: 24 }}>🏋️</div>
+            <div style={{ flex: 1 }}>
+              <p style={{ fontSize: 14, fontWeight: 700, color: "#92400E", marginBottom: 2 }}>ОЖИДАЮТ ПОДТВЕРЖДЕНИЯ</p>
+              <p style={{ fontSize: 13, color: "#B45309", fontWeight: 500 }}>
+                {pendingGym.length === 1 ? "Один запрос на выплату за тренировку" : `${pendingGym.length} запроса на выплату за тренировки`}
+              </p>
+            </div>
+            <button 
+              onClick={() => {
+                // Scroll to the gym logs section or just leave it
+                const el = document.getElementById('pending-gym-section');
+                if (el) el.scrollIntoView({ behavior: 'smooth' });
+              }}
+              style={{ fontSize: 12, fontWeight: 700, color: "#D97706", textDecoration: "underline", background: "none", border: "none", cursor: "pointer" }}
+            >
+              Смотреть
+            </button>
+          </div>
+        )}
+
         <div style={{ 
             background: greeting.bg, 
             padding: "24px", 
@@ -1084,7 +1189,7 @@ export default function App() {
         )}
 
         {isAdmin && pendingGym.length > 0 && (
-          <div style={styles.section}>
+          <div id="pending-gym-section" style={styles.section}>
             <h3 style={styles.sectionTitle}>ЗАПРОСЫ НА ВЫПЛАТУ (ЗАЛ)</h3>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {pendingGym.map((log) => {
@@ -2292,8 +2397,9 @@ export default function App() {
                                                 const f = e.target.files?.[0];
                                                 if (f) {
                                                   const r = new FileReader();
-                                                  r.onload = (ev) => {
-                                                    attachPhotoToJob(job.id, ev.target?.result as string);
+                                                  r.onload = async (ev) => {
+                                                    const compressed = await compressImage(ev.target?.result as string);
+                                                    attachPhotoToJob(job.id, compressed);
                                                   };
                                                   r.readAsDataURL(f);
                                                 }
@@ -2552,17 +2658,31 @@ export default function App() {
            initial={{ opacity: 0, y: 10 }}
            animate={{ opacity: 1, y: 0 }}
            transition={{ delay: 0.8, duration: 0.8 }}
+           style={{ textAlign: "center" }}
         >
           <h1 style={{ ...styles.sidebarLogo, color: "rgba(148, 163, 184, 0.15)", fontSize: 24, letterSpacing: "-1px" }}>HomeOS</h1>
+          <p style={{ fontSize: 10, color: "#94A3B844", marginTop: 4 }}>v{APP_VERSION} • region us-west1</p>
           <div style={{ display: "flex", gap: 4, justifyContent: "center", marginTop: 8 }}>
-            {[0, 1, 2].map((i) => (
-              <motion.div
-                key={i}
-                animate={{ scale: [1, 1.5, 1], opacity: [0.3, 1, 0.3] }}
-                transition={{ repeat: Infinity, duration: 1, delay: i * 0.2 }}
-                style={{ width: 6, height: 6, background: "#6366F1", borderRadius: "50%", opacity: 0.2 }}
-              />
-            ))}
+            {!hasSynced ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}>
+                        <RefreshCw size={12} color="#94A3B8" />
+                    </motion.div>
+                    <span style={{ fontSize: 10, color: "#94A3B8" }}>Синхронизация...</span>
+                </div>
+            ) : (
+                <div style={{ display: "flex", gap: 4 }}>
+                    <span style={{ fontSize: 10, color: "#10B981" }}>● В сети</span>
+                    {[0, 1, 2].map((i) => (
+                      <motion.div
+                        key={i}
+                        animate={{ scale: [1, 1.5, 1], opacity: [0.3, 1, 0.3] }}
+                        transition={{ repeat: Infinity, duration: 1, delay: i * 0.2 }}
+                        style={{ width: 6, height: 6, background: "#6366F1", borderRadius: "50%", opacity: 0.2 }}
+                      />
+                    ))}
+                </div>
+            )}
           </div>
         </motion.div>
       </div>
@@ -2685,7 +2805,7 @@ export default function App() {
 
             <nav style={styles.sidebarNav}>
               {[
-                { id: "dashboard", label: "Обзор" },
+                { id: "dashboard", label: "Обзор", count: isAdmin ? pendingGym.length : 0 },
                 { id: "judge", label: isAdmin ? "Баги" : "Мои баги", count: openBugs.length },
                 { id: "market", label: "Биржа", count: state.jobs.filter(j => (j.status === 'open' || j.status === 'review') && !(j as any).isParentTask).length },
                 { id: "ledger", label: "Ledger" },
@@ -2788,7 +2908,7 @@ export default function App() {
               paddingBottom: "env(safe-area-inset-bottom)"
             }}>
               {[
-                { id: "dashboard", icon: DashboardIcon, label: "Обзор" },
+                { id: "dashboard", icon: DashboardIcon, label: "Обзор", count: isAdmin ? pendingGym.length : 0 },
                 { id: "tasks", icon: TasksIcon, label: "Задачи", count: state.kitchenDuty === activeUser && !state.kitchenDone ? 1 : 0 },
                 { id: "judge", icon: BugIcon, label: "Баги", count: openBugs.length },
                 { id: "market", icon: MarketIcon, label: "Биржа", count: state.jobs.filter(j => (j.status === 'open' || j.status === 'review') && !(j as any).isParentTask).length },
@@ -3023,7 +3143,10 @@ export default function App() {
                   const file = e.target.files?.[0];
                   if (file) {
                     const reader = new FileReader();
-                    reader.onloadend = () => setBugForm(f => ({ ...f, photo: reader.result as string }));
+                    reader.onloadend = async () => {
+                      const compressed = await compressImage(reader.result as string);
+                      setBugForm(f => ({ ...f, photo: compressed }));
+                    };
                     reader.readAsDataURL(file);
                   }
                 }}
@@ -3129,7 +3252,10 @@ export default function App() {
                   const file = e.target.files?.[0];
                   if (file) {
                     const reader = new FileReader();
-                    reader.onloadend = () => setJobForm(f => ({ ...f, photo: reader.result as string }));
+                    reader.onloadend = async () => {
+                      const compressed = await compressImage(reader.result as string);
+                      setJobForm(f => ({ ...f, photo: compressed }));
+                    };
                     reader.readAsDataURL(file);
                   }
                 }}
