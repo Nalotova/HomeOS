@@ -37,7 +37,7 @@ import firebaseConfig from '../firebase-applet-config.json';
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
-const APP_VERSION = "2.3.2";
+const APP_VERSION = "2.3.3";
 
 interface FirestoreErrorInfo {
   error: string;
@@ -110,6 +110,7 @@ interface Bug {
   created: string;
   autoAssignAt: string | null;
   fined: boolean;
+  fine?: number;
 }
 
 interface GymLog {
@@ -128,6 +129,7 @@ interface Job {
   assignee: 'toma' | 'valya' | null;
   photo?: string;
   resolutionPhoto?: string;
+  isParentTask?: boolean;
   created: string;
   linkedTask?: {
     type: 'waste' | 'cleaning' | 'kitchen';
@@ -179,9 +181,16 @@ interface AppState {
 // ─── UTILS ────────────────────────────────────────────────────────
 const defaultState = (): AppState => {
   const now = new Date();
+  const nowTime = now.getTime();
   const monday = new Date(now);
   monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
   monday.setHours(0, 0, 0, 0);
+
+  const deadline2130 = new Date(); deadline2130.setHours(21, 30, 0, 0);
+  const deadline0800 = new Date(); deadline0800.setDate(deadline0800.getDate() + 1); deadline0800.setHours(8, 0, 0, 0);
+  
+  const isAfter2130 = nowTime > deadline2130.getTime();
+  const isAfter0800 = nowTime > deadline0800.getTime();
 
   return {
     week: monday.toISOString(),
@@ -191,7 +200,14 @@ const defaultState = (): AppState => {
     },
     kitchenDuty: (now.getDay() % 2 === 1) ? "toma" : "valya",
     kitchenDone: false,
-    kitchenTasks: { "Посудомойка": false, "Столы": false, "Плита": false },
+    kitchenTasks: { 
+      "Посудомойка": false, 
+      "Столы": false, 
+      "Плита": false,
+      ...(isAfter2130 ? { escalated_2130: true } : {}),
+      ...(isAfter0800 ? { escalated_0800: true } : {}),
+      overdue_migrated: true 
+    },
     kitchenDeadline: null,
     monthlyZones: { toma: "Bad", valya: "Toilette" },
     wastes: {
@@ -200,8 +216,8 @@ const defaultState = (): AppState => {
     },
     wasteDone: { toma: false, valya: false },
     cleaningTasks: {
-      toma: {},
-      valya: {},
+      toma: { overdue_migrated: true },
+      valya: { overdue_migrated: true },
     },
     cleaningDone: { toma: false, valya: false },
     bugs: [],
@@ -245,10 +261,165 @@ export default function App() {
   const [state, setState] = useState<AppState>(defaultState());
   const [hasSynced, setHasSynced] = useState(false);
   const [isSyncing, setIsSyncing] = useState(true);
-  const [view, setView] = useState<"dashboard" | "judge" | "ledger" | "settings" | "market">("dashboard");
+  const [view, setView] = useState<"dashboard" | "judge" | "ledger" | "settings" | "market" | "guide" | "tasks">("dashboard");
   const [activeUser, setActiveUser] = useState<"toma" | "valya" | "admin" | null>(() => {
-    return (localStorage.getItem("familyAuthToken") as "toma" | "valya" | "admin" | null) || null;
+    try {
+      return (localStorage.getItem("familyAuthToken") as "toma" | "valya" | "admin" | null) || null;
+    } catch (e) {
+      console.warn("LocalStorage access failed", e);
+      return null;
+    }
   });
+
+  const isAdmin = activeUser === "admin";
+
+  const deleteLogEntry = (idx: number) => {
+    if (!isAdmin) return;
+    
+    persist(s => {
+      const entry = s.weeklyLog[idx];
+      if (!entry) return s;
+
+      const nextLogs = [...s.weeklyLog];
+      nextLogs.splice(idx, 1);
+      
+      const nextUsers = { ...s.users };
+      const u = entry.user as "toma" | "valya";
+      if (u === 'toma' || u === 'valya') {
+        if (entry.event === 'gym') {
+          nextUsers[u].gymWallet = (nextUsers[u].gymWallet || 0) - entry.delta;
+        } else {
+          nextUsers[u].balance = (nextUsers[u].balance || 0) - entry.delta;
+        }
+      }
+      return { ...s, weeklyLog: nextLogs, users: nextUsers };
+    });
+    showToast("Транзакция удалена", "info");
+  };
+
+  const cancelPenalty = (type: 'kitchen' | 'cleaning' | 'waste', userKey: 'toma' | 'valya') => {
+    if (!isAdmin) return;
+    
+    persist(s => {
+      const nextUsers = { ...s.users };
+      const nextWeeklyLog = [...s.weeklyLog];
+      let nextJobs = [...s.jobs];
+      const nextKitchenTasks = { ...s.kitchenTasks };
+      const nextCleaningTasks = { ...s.cleaningTasks };
+      const nextWastes = { ...s.wastes };
+      let nextKitchenDone = s.kitchenDone;
+      const nextCleaningDone = { ...s.cleaningDone };
+      const nextWasteDone = { ...s.wasteDone };
+
+      // 1. Find and remove the late penalty log entry & revert balance
+      // We look for recent penalty (today or very recent)
+      let logIdx = -1;
+      for (let i = nextWeeklyLog.length - 1; i >= 0; i--) {
+        if (nextWeeklyLog[i].user === userKey && nextWeeklyLog[i].event === 'kitchen_late') {
+          logIdx = i;
+          break;
+        }
+      }
+      
+      if (logIdx !== -1) {
+        const log = nextWeeklyLog[logIdx];
+        nextUsers[userKey].balance -= log.delta; // Revert fine
+        nextWeeklyLog.splice(logIdx, 1);
+      }
+
+      // 2. Remove associated market job
+      const userObj = s.users[userKey];
+      if (userObj) {
+        const titleSnippet = userObj.name;
+        nextJobs = nextJobs.filter(j => !j.title.includes(titleSnippet) || j.status !== 'open' || j.creator !== 'admin');
+      }
+
+      // 3. Mark as done and clear technical flags
+      if (type === 'kitchen') {
+        nextKitchenDone = true;
+        delete nextKitchenTasks['escalated_2130'];
+        delete nextKitchenTasks['escalated_0800'];
+        delete nextKitchenTasks['overdue_migrated'];
+      } else if (type === 'cleaning') {
+        nextCleaningDone[userKey] = true;
+        if (nextCleaningTasks[userKey]) {
+          delete nextCleaningTasks[userKey]['overdue_migrated'];
+        }
+      } else if (type === 'waste') {
+        nextWasteDone[userKey] = true;
+        if (nextWastes[userKey]) {
+            delete nextWastes[userKey]['overdue_migrated'];
+        }
+      }
+
+      return { 
+        ...s, 
+        users: nextUsers, 
+        weeklyLog: nextWeeklyLog, 
+        jobs: nextJobs,
+        kitchenTasks: nextKitchenTasks,
+        cleaningTasks: nextCleaningTasks,
+        wastes: nextWastes,
+        kitchenDone: nextKitchenDone,
+        cleaningDone: nextCleaningDone,
+        wasteDone: nextWasteDone
+      };
+    });
+    
+    showToast("Штраф отменен, работа зачтена ✅", "success");
+  };
+
+  const requestPenaltyCancellation = (type: 'kitchen' | 'waste' | 'cleaning', userKey: 'toma' | 'valya') => {
+    if (isAdmin) return;
+    const userObj = state.users[userKey];
+    if (!userObj) return;
+    const name = userObj.name;
+    const typeLabel = type === 'kitchen' ? 'Кухня' : type === 'waste' ? 'Мусор' : 'Уборка';
+    
+    persist(s => {
+      // Check if already requested
+      const alreadyRequested = s.jobs.some(j => 
+        (j as any).isParentTask && 
+        j.linkedTask?.type === type && 
+        j.linkedTask?.user === userKey && 
+        j.linkedTask?.title === 'cancellation_request' && 
+        j.status === 'open'
+      );
+      
+      if (alreadyRequested) return s;
+
+      return {
+        ...s,
+        jobs: [...s.jobs, {
+          id: Date.now(),
+          creator: userKey,
+          title: `ОТМЕНА ШТРАФА: ${typeLabel} (${name})`,
+          reward: 0,
+          deadline: new Date(Date.now() + 24 * 3600000).toISOString(),
+          status: 'open',
+          assignee: 'admin' as any,
+          created: new Date().toISOString(),
+          linkedTask: { type, user: userKey, title: 'cancellation_request' },
+          isParentTask: true
+        } as any]
+      };
+    });
+    showToast("Запрос на отмену штрафа отправлен!", "info");
+  };
+
+  const resolveAdminRequest = (job: Job) => {
+    if (!isAdmin) return;
+    
+    if (job.linkedTask?.title === 'cancellation_request') {
+      cancelPenalty(job.linkedTask.type, job.linkedTask.user);
+    }
+    
+    persist(s => ({
+      ...s,
+      jobs: s.jobs.map(j => j.id === job.id ? { ...j, status: 'resolved' } : j)
+    }));
+    showToast("Запрос выполнен!", "success");
+  };
   const [authStep, setAuthStep] = useState<"select" | "pin">("select");
   const [authTarget, setAuthTarget] = useState<"toma" | "valya" | "admin" | null>(null);
   const [authPin, setAuthPin] = useState("");
@@ -261,6 +432,7 @@ export default function App() {
   const [spendModal, setSpendModal] = useState(false);
   const [spendForm, setSpendForm] = useState({ user: "toma" as "toma" | "valya", amount: "", category: "Вкусняшки" });
   const [payoutConfirm, setPayoutConfirm] = useState(false);
+  const [manualAdjustments, setManualAdjustments] = useState<Record<string, string>>({ toma: "1.0", valya: "1.0" });
   const [gymModal, setGymModal] = useState(false);
   const [delegateModal, setDelegateModal] = useState<{ type: 'waste' | 'cleaning' | 'kitchen', user: 'toma' | 'valya', title: string } | null>(null);
   const [delegatePrice, setDelegatePrice] = useState("1");
@@ -605,8 +777,8 @@ export default function App() {
         persist((s) => ({
           ...s,
           kitchenTasks: { ...s.kitchenTasks, escalated_2130: true },
-          users: { ...s.users, [dutyUser]: { ...s.users[dutyUser], balance: s.users[dutyUser].balance - 2 } },
-          weeklyLog: [...s.weeklyLog, { date: todayISO(), user: dutyUser, event: "kitchen_late", delta: -2 }],
+          users: { ...s.users, [dutyUser]: { ...s.users[dutyUser], balance: s.users[dutyUser].balance - 2.0 } },
+          weeklyLog: [...s.weeklyLog, { date: todayISO(), user: dutyUser, event: "kitchen_late", delta: -2.0, note: "Дедлайн 21:30" }],
           jobs: [...s.jobs, { 
             id: Date.now(), 
             creator: dutyUser, 
@@ -614,11 +786,11 @@ export default function App() {
             reward: 2, 
             deadline: deadline0800.toISOString(),
             status: 'open',
-            assignee: otherUser,
+            assignee: null,
             created: todayISO()
           }]
         }));
-        showToast(`⚠️ Дедлайн 21:30 пропущен. Штраф -2 € для ${state.users[dutyUser].name}`, "error");
+        showToast(`⚠️ Дедлайн 21:30 пропущен. Штраф -2.0 € для ${state.users[dutyUser].name}`, "error");
       }
 
       // 08:00 Penalty
@@ -626,11 +798,11 @@ export default function App() {
         persist((s) => ({
           ...s,
           kitchenTasks: { ...s.kitchenTasks, escalated_0800: true },
-          users: { ...s.users, [dutyUser]: { ...s.users[dutyUser], balance: s.users[dutyUser].balance - 1 } },
-          weeklyLog: [...s.weeklyLog, { date: todayISO(), user: dutyUser, event: "kitchen_late", delta: -1 }],
+          users: { ...s.users, [dutyUser]: { ...s.users[dutyUser], balance: s.users[dutyUser].balance - 2.0 } },
+          weeklyLog: [...s.weeklyLog, { date: todayISO(), user: dutyUser, event: "kitchen_late", delta: -2.0, note: "Дедлайн 08:00" }],
           kitchenDone: true 
         }));
-        showToast("⚠️ Кухня не убрана к утру. Штраф -1 €. Админ убирает.", "error");
+        showToast("⚠️ Кухня не убрана к утру. Штраф -2.0 €. Админ убирает.", "error");
       }
     }
 
@@ -663,55 +835,72 @@ export default function App() {
         toExpire.forEach(bug => {
           if (bug.target) {
             nextBugs = nextBugs.map(b => b.id === bug.id ? { ...b, status: 'expired', fined: true } : b);
-            // Fine is 1.5 if not claimed quickly, 1.0 if claimed within 1h.
-            // Check if claimed within 1h of creation. 
-            // In a real system, you'd store the claim time. Simplification: 
-            // if current time - creation time < 1hr + deadline, fine is 1.0.
-            const created = new Date(bug.created).getTime();
-            const claimedAt = bug.target ? Date.now() : 0; // Approximate
-            const fine = (bug.target && (Date.now() - created < 3600000)) ? 1.0 : 1.5;                
+            const fine = bug.fine || 1.0;                
             
             nextUsers[bug.target] = { ...nextUsers[bug.target], balance: nextUsers[bug.target].balance - fine };
-            nextWeeklyLog.push({ date: todayISO(), user: bug.target, event: 'bug_fine', delta: -fine });
+            nextWeeklyLog.push({ date: todayISO(), user: bug.target, event: 'bug_fine', delta: -fine, note: `Просрочен баг: ${bug.desc.slice(0,10)}...` });
           }
         });
 
         toExpireJobs.forEach(job => {
-          nextJobs = nextJobs.map(j => j.id === job.id ? { ...j, status: 'expired' } : j);
+          nextJobs = nextJobs.map(j => j.id === job.id ? { ...j, status: 'expired', assignee: null } : j);
         });
 
-        // Weekly cleanup of completed parent tasks
-        const day = new Date().getDay();
-        if (day === 1) { // On Monday
-           nextJobs = nextJobs.filter(j => !(j as any).isParentTask || j.status !== 'resolved');
-        }
-
-        if (kitchenOverdue) {
+        // Housekeeping Overdue Migrations
+        if (kitchenOverdue && !s.kitchenTasks["overdue_migrated"]) {
             const dutyUser = s.kitchenDuty;
             nextUsers[dutyUser] = { ...nextUsers[dutyUser], balance: nextUsers[dutyUser].balance - 2.0 };
-            nextWeeklyLog.push({ date: todayISO(), user: dutyUser, event: 'kitchen_late', delta: -2.0, note: "Просрочка кухни" });
-            nextKitchenDone = true; // Mark as done to stop fines
+            nextWeeklyLog.push({ date: todayISO(), user: dutyUser, event: 'kitchen_late', delta: -2.0, note: "Просрочка кухни (миграция)" });
+            
+            // Move to market
+            nextJobs.push({
+                id: Date.now() + 1,
+                creator: 'admin',
+                title: "КУХНЯ: Хвосты от " + s.users[dutyUser].name,
+                reward: 2,
+                deadline: new Date(Date.now() + 2 * 3600000).toISOString(),
+                status: 'open',
+                assignee: null,
+                created: todayISO()
+            });
+
+            nextKitchenDone = true; 
+            s.kitchenTasks["overdue_migrated"] = true; // Local flag for this check
         }
         
         if (cleaningOverdue) {
             Object.keys(s.cleaningDone).forEach(u => {
-                if (!s.cleaningDone[u]) {
+                if (!s.cleaningDone[u] && !s.cleaningTasks[u]?.["overdue_migrated"]) {
                     nextUsers[u] = { ...nextUsers[u], balance: nextUsers[u].balance - 2.0 };
                     nextWeeklyLog.push({ date: todayISO(), user: u, event: 'kitchen_late', delta: -2.0, note: "Просрочка уборки" });
+                    
+                     // Move to market
+                    nextJobs.push({
+                        id: Date.now() + 2,
+                        creator: 'admin',
+                        title: "УБОРКА: Хвосты от " + s.users[u].name,
+                        reward: 2,
+                        deadline: new Date(Date.now() + 4 * 3600000).toISOString(),
+                        status: 'open',
+                        assignee: null,
+                        created: todayISO()
+                    });
+
                     nextCleaningDone[u] = true;
+                    if (!s.cleaningTasks[u]) s.cleaningTasks[u] = {};
+                    s.cleaningTasks[u]["overdue_migrated"] = true;
                 }
             });
         }
 
         return { ...s, bugs: nextBugs, jobs: nextJobs, users: nextUsers, weeklyLog: nextWeeklyLog, lastBugTarget: nextLastTarget, kitchenDone: nextKitchenDone, cleaningDone: nextCleaningDone };
       });
-      if (toExpire.length > 0) showToast("Баг просрочен. Штраф 1 €", "error");
-      if (kitchenOverdue || cleaningOverdue) showToast("Просрочка по дежурству. Штраф 2 €", "error");
+      if (toExpire.length > 0) showToast(`Баг просрочен. Штраф ${state.bugs.find(b => toExpire.map(ex => ex.id).includes(b.id))?.fine || 1.0} €`, "error");
+      if (kitchenOverdue || cleaningOverdue) showToast("Просрочка по дежурству. Штраф 2.0 €", "error");
       if (toExpireJobs.length > 0) showToast("Время на выполнение работы истекло", "warn");
     }
   }, [tick, state.bugs, state.jobs, persist]);
 
-  const isAdmin = activeUser === "admin";
   const user = activeUser && activeUser !== "admin" ? state.users[activeUser] : null;
 
   const markKitchenDone = () => {
@@ -735,11 +924,11 @@ export default function App() {
         kitchenDone: true,
         users: {
           ...s.users,
-          [u]: { ...s.users[u], balance: s.users[u].balance - 2 },
+          [u]: { ...s.users[u], balance: s.users[u].balance - 2.0 },
         },
-        weeklyLog: [...s.weeklyLog, { date: todayISO(), user: u, event: "kitchen_late", delta: -2 }],
+        weeklyLog: [...s.weeklyLog, { date: todayISO(), user: u, event: "kitchen_late", delta: -2.0 }],
       }));
-      showToast("⚠️ Дедлайн пропущен. Штраф -2 €", "error");
+      showToast("⚠️ Дедлайн пропущен. Штраф -2.0 €", "error");
     } else {
       persist((s) => ({ ...s, kitchenDone: true }));
       showToast(randomMsg, "success");
@@ -847,8 +1036,9 @@ export default function App() {
       status: "open",
       deadline: new Date(now + durationMs).toISOString(),
       created: new Date().toISOString(),
-      autoAssignAt: bugForm.target === "none" ? new Date(now + 30 * 60000).toISOString() : null,
-      fined: false
+      autoAssignAt: bugForm.target === "none" ? new Date(now + 60 * 60000).toISOString() : null,
+      fined: false,
+      fine: bugForm.target === "none" ? 1.5 : 1.0
     };
     persist((s) => ({
       ...s,
@@ -864,7 +1054,7 @@ export default function App() {
     if (!u) return;
     persist((s) => ({
       ...s,
-      bugs: s.bugs.map(b => b.id === bugId ? { ...b, target: u, autoAssignAt: null } : b),
+      bugs: s.bugs.map(b => b.id === bugId ? { ...b, target: u, autoAssignAt: null, fine: 1.0 } : b),
       lastBugTarget: u
     }));
     showToast("Ответственность принята!", "success");
@@ -969,12 +1159,7 @@ export default function App() {
   };
 
   const submitJob = (jobId: number) => {
-    const job = state.jobs.find(j => j.id === jobId);
-    if (!job?.resolutionPhoto) {
-      showToast("📸 Сначала прикрепите фото отчета!", "warn");
-      return;
-    }
-
+    // Photos are now optional per user request
     persist((s) => ({
       ...s,
       jobs: s.jobs.map(j => j.id === jobId ? { ...j, status: "review" } : j)
@@ -1095,10 +1280,10 @@ export default function App() {
       bugs: [],
       jobs: [], // Clear all jobs
       gymLogs: [], // Clear gym logs
-      kitchenDone: false,
+      kitchenDone: true, // Set to true to prevent immediate re-fine if past deadline
       kitchenTasks: { "Посудомойка": false, "Столы": false, "Плита": false }, // Reset kitchen tasks
-      cleaningDone: { toma: false, valya: false }, // Reset cleaning tasks
-      wasteDone: { toma: false, valya: false }, // Reset waste tasks
+      cleaningDone: { toma: true, valya: true }, // Same for cleaning
+      wasteDone: { toma: true, valya: true }, // Same for waste
       wastes: { toma: {}, valya: {} },
       cleaningTasks: { toma: {}, valya: {} },
       weeklyWinner: winner,
@@ -1425,7 +1610,9 @@ export default function App() {
   function Tasks() {
     const isDuty = state.kitchenDuty === activeUser;
     const taskState = state.kitchenTasks || { "Посудомойка": false, "Столы": false, "Плита": false };
-    const tasks = Object.keys(taskState).sort((a, b) => (taskState[a] ? 1 : 0) - (taskState[b] ? 1 : 0));
+    const tasks = Object.keys(taskState)
+      .filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
+      .sort((a, b) => (taskState[a] ? 1 : 0) - (taskState[b] ? 1 : 0));
     const [newTaskTitle, setNewTaskTitle] = useState("");
     const [newWasteTask, setNewWasteTask] = useState<{ user: "toma" | "valya", title: string } | null>(null);
     const [newCleaningTask, setNewCleaningTask] = useState<{ user: "toma" | "valya", title: string } | null>(null);
@@ -1508,15 +1695,21 @@ export default function App() {
     const usersToShowWaste = isAdmin ? ["toma", "valya"] : 
                              (activeUser === "toma" || activeUser === "valya") ? [activeUser] : [];
 
+    const techKeys = ['escalated_2130', 'escalated_0800', 'overdue_migrated'];
+    
     const wasteDone = state.wasteDone || { toma: false, valya: false };
-    const hasAnyWasteTasks = usersToShowWaste.some(u => Object.keys(state.wastes[u] || {}).length > 0);
+    const hasAnyWasteTasks = usersToShowWaste.some(u => 
+        Object.keys(state.wastes[u] || {}).filter(k => !techKeys.includes(k)).length > 0
+    );
     
     // House Cleaning Helpers
     const cleaningDeadline = new Date(now);
     cleaningDeadline.setDate(now.getDate() + (5 - now.getDay()));
     cleaningDeadline.setHours(18, 0, 0, 0);
     const cleaningRemaining = Math.max(0, cleaningDeadline.getTime() - now.getTime());
-    const hasAnyCleaningTasks = usersToShowWaste.some(u => Object.keys(state.cleaningTasks[u] || {}).length > 0);
+    const hasAnyCleaningTasks = usersToShowWaste.some(u => 
+        Object.keys(state.cleaningTasks[u] || {}).filter(k => !techKeys.includes(k)).length > 0
+    );
 
     const hasAnyTasks = (showKitchen && !state.kitchenDone) || hasAnyWasteTasks || hasAnyCleaningTasks;
 
@@ -1594,9 +1787,33 @@ export default function App() {
                                     </div>
                                 )}
 
-                                <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#EF4444", width: `${Math.min(100, Math.max(0, (new Date().getHours() / 21.5) * 100))}%` }}></div></div>
-                                <div style={{ textAlign: "center", fontSize: 12, color: "#64748B", fontWeight: 600, marginTop: 8 }}>
-                                    {formatTime(kitchenRemaining)}
+                                 <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#EF4444", width: `${Math.min(100, Math.max(0, (new Date().getHours() / 21.5) * 100))}%` }}></div></div>
+                                <div style={{ textAlign: "center", fontSize: 13, color: kitchenRemaining <= 0 ? "#EF4444" : "#64748B", fontWeight: 700, marginTop: 8 }}>
+                                    {kitchenRemaining <= 0 ? (
+                                        <div style={{ background: "#FEF2F2", padding: "12px", borderRadius: 12, border: "1px solid #FCA5A5" }}>
+                                            <div style={{ fontSize: 16, marginBottom: 4 }}>⚠️ ВРЕМЯ ВЫШЛО</div>
+                                            <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 12 }}>Штраф выписан. Задание актуально до 08:00 утра или до покупки на Бирже.</div>
+                                            
+                                            {isAdmin && (
+                                                <button 
+                                                    style={{ ...styles.primaryBtn, background: "#EF4444", width: "100%", height: 36, fontSize: 12 }}
+                                                    onClick={() => cancelPenalty('kitchen', state.kitchenDuty as 'toma' | 'valya')}
+                                                >
+                                                    ОТМЕНИТЬ ШТРАФ ↩️
+                                                </button>
+                                            )}
+                                            {!isAdmin && activeUser === state.kitchenDuty && (
+                                                <button 
+                                                    style={{ ...styles.primaryBtn, background: "#6366F1", width: "100%", height: 36, fontSize: 12 }}
+                                                    onClick={() => requestPenaltyCancellation('kitchen', activeUser as 'toma' | 'valya')}
+                                                >
+                                                    ЗАПРОСИТЬ ОТМЕНУ 🙏
+                                                </button>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        formatTime(kitchenRemaining)
+                                    )}
                                 </div>
 
                                 <div style={{ marginTop: 24, padding: "16px 0", borderTop: "1px solid #F1F5F9" }}>
@@ -1638,7 +1855,9 @@ export default function App() {
                     <div style={{ padding: "16px 24px" }}>
                         {usersToShowWaste.map(u => {
                             const uTasks = state.wastes[u] || {};
-                            const taskNames = Object.keys(uTasks).sort((a, b) => (uTasks[a] ? 1 : 0) - (uTasks[b] ? 1 : 0));
+                            const taskNames = Object.keys(uTasks)
+                                .filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
+                                .sort((a, b) => (uTasks[a] ? 1 : 0) - (uTasks[b] ? 1 : 0));
                             
                             return (
                                 <div key={u} style={{ marginBottom: 24 }}>
@@ -1789,6 +2008,22 @@ export default function App() {
                                     {wasteDone[u] && (
                                         <div style={{ marginTop: 16, padding: "14px", background: "#ECFDF5", borderRadius: 10, textAlign: "center", color: "#065F46", fontWeight: 700, border: "2px solid #10B981" }}>
                                             ✨ ВЫНОС МУСОРА ЗАВЕРШЕН!
+                                            {isAdmin && state.wastes[u]?.["overdue_migrated"] && (
+                                                <button 
+                                                    style={{ display: "block", width: "100%", marginTop: 8, background: "#EF4444", color: "white", border: "none", padding: "6px", borderRadius: 6, fontSize: 11 }}
+                                                    onClick={() => cancelPenalty('waste', u as 'toma' | 'valya')}
+                                                >
+                                                    Отменить штраф
+                                                </button>
+                                            )}
+                                            {!isAdmin && activeUser === u && state.wastes[u]?.["overdue_migrated"] && (
+                                                <button 
+                                                    style={{ display: "block", width: "100%", marginTop: 8, background: "#6366F1", color: "white", border: "none", padding: "6px", borderRadius: 6, fontSize: 11 }}
+                                                    onClick={() => requestPenaltyCancellation('waste', u as 'toma' | 'valya')}
+                                                >
+                                                    Запросить отмену
+                                                </button>
+                                            )}
                                         </div>
                                     )}
                                 </div>
@@ -1822,7 +2057,9 @@ export default function App() {
                     <div style={{ padding: "16px 24px" }}>
                         {usersToShowWaste.map(u => {
                             const uTasks = state.cleaningTasks[u] || {};
-                            const taskNames = Object.keys(uTasks).sort((a, b) => (uTasks[a] ? 1 : 0) - (uTasks[b] ? 1 : 0));
+                            const taskNames = Object.keys(uTasks)
+                                .filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
+                                .sort((a, b) => (uTasks[a] ? 1 : 0) - (uTasks[b] ? 1 : 0));
                             
                             return (
                                 <div key={u} style={{ marginBottom: 24 }}>
@@ -1967,6 +2204,22 @@ export default function App() {
                                     {state.cleaningDone[u] && (
                                         <div style={{ marginTop: 16, padding: "14px", background: "#ECFDF5", borderRadius: 10, textAlign: "center", color: "#065F46", fontWeight: 700, border: "2px solid #10B981" }}>
                                             ✨ ДОМ СИЯЕТ! УБОРКА ЗАВЕРШЕНА
+                                            {isAdmin && state.cleaningTasks[u]?.["overdue_migrated"] && (
+                                                <button 
+                                                    style={{ display: "block", width: "100%", marginTop: 8, background: "#EF4444", color: "white", border: "none", padding: "6px", borderRadius: 6, fontSize: 11 }}
+                                                    onClick={() => cancelPenalty('cleaning', u as 'toma' | 'valya')}
+                                                >
+                                                    Отменить штраф
+                                                </button>
+                                            )}
+                                            {!isAdmin && activeUser === u && state.cleaningTasks[u]?.["overdue_migrated"] && (
+                                                <button 
+                                                    style={{ display: "block", width: "100%", marginTop: 8, background: "#6366F1", color: "white", border: "none", padding: "6px", borderRadius: 6, fontSize: 11 }}
+                                                    onClick={() => requestPenaltyCancellation('cleaning', u as 'toma' | 'valya')}
+                                                >
+                                                    Запросить отмену
+                                                </button>
+                                            )}
                                         </div>
                                     )}
                                 </div>
@@ -1977,7 +2230,7 @@ export default function App() {
                             <>
                                 <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#10B981", width: `${Math.min(100, Math.max(0, ((now.getHours() * 60 + now.getMinutes()) / (18 * 60)) * 100))}%` }}></div></div>
                                 <div style={{ marginTop: 8, fontSize: 13, color: cleaningRemaining < (3 * 60 * 60 * 1000) ? "#DC2626" : "#64748B", fontWeight: 700, textAlign: "center" }}>
-                                    {formatTime(cleaningRemaining)}
+                                    {formatTime(cleaningRemaining)} до штрафа за уборку
                                 </div>
                             </>
                         )}
@@ -1995,13 +2248,7 @@ export default function App() {
                                 <p style={{ fontWeight: 600, color: job.status === 'resolved' ? "#64748B" : "#78350F", textDecoration: job.status === 'resolved' ? "line-through" : "none" }}>{job.status === 'resolved' && "✅ "}{job.title}</p>
                                 {job.status !== 'resolved' && (
                                     <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-                                        <button style={{ ...styles.primaryBtn, background: "#10B981" }} onClick={() => {
-                                            persist(s => ({
-                                                ...s,
-                                                jobs: s.jobs.map(j => j.id === job.id ? { ...j, status: 'resolved' } : j)
-                                            }));
-                                            showToast("Задача отмечена как выполненная!", "success");
-                                        }}>Выполнено</button>
+                                        <button style={{ ...styles.primaryBtn, background: "#10B981" }} onClick={() => resolveAdminRequest(job)}>Выполнено</button>
                                         <button style={{ ...styles.cancelBtn }} onClick={() => deleteJob(job.id)}>Удалить</button>
                                     </div>
                                 )}
@@ -2253,9 +2500,11 @@ export default function App() {
   function Ledger() {
     const [filterUser, setFilterUser] = useState<string>("all");
 
+    const keyedLogs = state.weeklyLog.map((log, index) => ({ ...log, originalIdx: index }));
+
     const availableLogs = activeUser && activeUser !== "admin"
-      ? state.weeklyLog.filter((l) => l.user === activeUser)
-      : state.weeklyLog;
+      ? keyedLogs.filter((l) => l.user === activeUser)
+      : keyedLogs;
 
     const displayedLog = filterUser === "all" 
       ? availableLogs 
@@ -2315,6 +2564,7 @@ export default function App() {
                   <th style={styles.th}>Категория</th>
                   <th style={{ ...styles.th, textAlign: "right" }}>Изменение</th>
                   <th style={styles.th}>Период</th>
+                  {isAdmin && <th style={{ ...styles.th, textAlign: "right" }}>Действие</th>}
                 </tr>
               </thead>
               <tbody>
@@ -2329,6 +2579,31 @@ export default function App() {
                       {tx.delta >= 0 ? "+" : ""}{tx.delta.toFixed(2)} €
                     </td>
                     <td style={{ ...styles.td, whiteSpace: "nowrap" }}>{new Date(tx.date).toLocaleDateString("ru-RU")}</td>
+                    {isAdmin && (
+                      <td style={{ ...styles.td, textAlign: "right", paddingRight: 12 }}>
+                        <button 
+                          style={{ 
+                            background: "#FEF2F2", 
+                            border: "1px solid #FEE2E2", 
+                            cursor: "pointer", 
+                            color: "#EF4444", 
+                            padding: "6px 10px", 
+                            borderRadius: 8,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4
+                          }}
+                          onClick={() => {
+                            if (window.confirm("Удалить эту транзакцию и вернуть средства?")) {
+                              deleteLogEntry(tx.originalIdx);
+                            }
+                          }}
+                        >
+                          <Trash2 size={14} />
+                          <span style={{ fontSize: 11, fontWeight: 700 }}>Удалить</span>
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
                 {displayedLog.length === 0 && (
@@ -2490,7 +2765,7 @@ export default function App() {
                                 <span>{job.status === 'review' ? "Ожидает проверки" : `Осталось ${timeStr}`}</span>
                             </div>
                             <div style={{ marginTop: 4, fontSize: 11, color: "#64748B", fontWeight: 500 }}>
-                                {job.creator === "admin" ? "Заказ: Родители" : `От: ${state.users[job.creator].name}`}
+                                {job.creator === "admin" ? "Заказ: Родители" : `От: ${state.users[job.creator]?.name || '?'}`}
                             </div>
                         </div>
 
@@ -2502,7 +2777,7 @@ export default function App() {
                                 </div>
                                 {isClaimed && (
                                     <div style={{ fontSize: 10, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", marginTop: 2 }}>
-                                        {job.status === 'in_progress' ? `В работе (${state.users[job.assignee!].name})` : "На проверке"}
+                                        {job.status === 'in_progress' ? `В работе (${state.users[job.assignee!]?.name || '?'})` : "На проверке"}
                                     </div>
                                 )}
                             </div>
@@ -2696,7 +2971,7 @@ export default function App() {
                                     </div>
                                     <div style={{ fontSize: 13, color: "#475569" }}>
                                         {job.assignee 
-                                            ? <span><strong>{state.users[job.assignee].name}</strong> перехватил «{job.title}» у <strong>{job.creator === 'admin' ? "Родителей" : state.users[job.creator].name}</strong></span>
+                                            ? <span><strong>{job.assignee === 'admin' ? 'Мама' : (state.users[job.assignee]?.name || 'Родители')}</strong> перехватил «{job.title}» у <strong>{job.creator === 'admin' ? "Родителей" : state.users[job.creator]?.name || 'Родителей'}</strong></span>
                                             : <span>«{job.title}» — просрочено</span>
                                         }
                                     </div>
@@ -2749,6 +3024,72 @@ export default function App() {
                 </button>
               </div>
             ))}
+          </div>
+        </div>
+
+        <div style={styles.section}>
+          <h3 style={styles.sectionTitle}>Админ-панель: Финансы</h3>
+          <div style={styles.card}>
+            <div style={{ padding: "16px 20px", display: "flex", gap: 12, flexDirection: "column" }}>
+              {Object.keys(state.users).map(u => (
+                <div key={u} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                  <div style={{ fontWeight: 700 }}>{state.users[u].name}</div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input 
+                      type="number" 
+                      step="0.5"
+                      value={manualAdjustments[u]}
+                      onChange={(e) => setManualAdjustments(prev => ({ ...prev, [u]: e.target.value }))}
+                      style={{ width: 60, padding: "6px 8px", borderRadius: 8, border: "1px solid #CBD5E1", fontSize: 13, fontWeight: 700 }}
+                    />
+                    <button 
+                      style={{ padding: "6px 12px", background: "#10B981", color: "white", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 700 }}
+                      onClick={() => {
+                        const val = parseFloat(manualAdjustments[u]);
+                        if (isNaN(val)) return;
+                        persist(s => ({
+                          ...s,
+                          users: { ...s.users, [u]: { ...s.users[u], balance: s.users[u].balance + val } },
+                          weeklyLog: [...s.weeklyLog, { date: todayISO(), user: u, event: "job_reward", delta: val, note: "Ручное начисление (Админ)" }]
+                        }));
+                        showToast(`Начислено ${val}€`, "success");
+                      }}
+                    >
+                      + €
+                    </button>
+                    <button 
+                      style={{ padding: "6px 12px", background: "#EF4444", color: "white", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 700 }}
+                      onClick={() => {
+                        const val = parseFloat(manualAdjustments[u]);
+                        if (isNaN(val)) return;
+                        persist(s => ({
+                          ...s,
+                          users: { ...s.users, [u]: { ...s.users[u], balance: s.users[u].balance - val } },
+                          weeklyLog: [...s.weeklyLog, { date: todayISO(), user: u, event: "expense", delta: -val, note: "Ручное списание/штраф (Админ)" }]
+                        }));
+                        showToast(`Списано ${val}€`, "error");
+                      }}
+                    >
+                      - €
+                    </button>
+                    <button 
+                      style={{ padding: "6px 12px", background: "#6366F1", color: "white", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 700 }}
+                      onClick={() => {
+                        persist(s => ({
+                          ...s,
+                          gymLogs: [...s.gymLogs, { user: u, date: todayISO(), confirmed: true }],
+                          users: { ...s.users, [u]: { ...s.users[u], gymWallet: s.users[u].gymWallet + 4 } },
+                          weeklyLog: [...s.weeklyLog, { date: todayISO(), user: u, event: "gym", delta: 4, note: "Ввод за зал (Админ)" }]
+                        }));
+                        showToast(`Зал (+4€) записан`, "success");
+                      }}
+                    >
+                      🏋️ +4
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -2830,13 +3171,55 @@ export default function App() {
                 ) : (
                   <>
                     <button style={{ ...styles.primaryBtn, background: "#EF4444" }} onClick={() => {
-                      persist(s => ({ 
-                        ...s, 
-                        kitchenDone: false, 
-                        lastKitchenRotation: "forced",
-                        kitchenTasks: { "Посудомойка": false, "Столы": false, "Плита": false }
-                      }));
-                      showToast("Дежурство сброшено", "info");
+                      const nowTime = Date.now();
+                      const deadline2130 = new Date(); deadline2130.setHours(21, 30, 0, 0);
+                      const deadline0800 = new Date(); deadline0800.setDate(deadline0800.getDate() + 1); deadline0800.setHours(8, 0, 0, 0);
+                      const isAfter2130 = nowTime > deadline2130.getTime();
+                      const isAfter0800 = nowTime > deadline0800.getTime();
+                      
+                      persist(s => {
+                        // Revert today's kitchen/cleaning fines
+                        const today = todayISO();
+                        let nextUsers = { ...s.users };
+                        const logsToRevert = s.weeklyLog.filter(l => l.date === today && (l.event === 'kitchen_late'));
+                        
+                        logsToRevert.forEach(l => {
+                           if (l.user === 'toma' || l.user === 'valya') {
+                              nextUsers[l.user].balance -= l.delta;
+                           }
+                        });
+
+                        const nextLogs = s.weeklyLog.filter(l => !(l.date === today && l.event === 'kitchen_late'));
+
+                        const newCleaningTasks: Record<string, any> = {};
+                        Object.keys(s.users).forEach(u => {
+                          newCleaningTasks[u] = { overdue_migrated: true };
+                        });
+
+                        // Clear generated jobs related to today's kitchen
+                        const nextJobs = s.jobs.filter(j => !(j.creator === s.kitchenDuty && j.title.includes("Помыть кухню")));
+
+                        return { 
+                          ...s, 
+                          users: nextUsers,
+                          weeklyLog: nextLogs,
+                          jobs: nextJobs,
+                          kitchenDone: false, 
+                          lastKitchenRotation: "forced",
+                          kitchenTasks: { 
+                            "Посудомойка": false, 
+                            "Столы": false, 
+                            "Плита": false,
+                            ...(isAfter2130 ? { escalated_2130: true } : {}),
+                            ...(isAfter0800 ? { escalated_0800: true } : {}),
+                            overdue_migrated: true 
+                          },
+                          cleaningDone: { toma: false, valya: false },
+                          wasteDone: { toma: false, valya: false },
+                          cleaningTasks: newCleaningTasks
+                        };
+                      });
+                      showToast("День и штрафы дня обнулены", "info");
                       setConfirmReset(false);
                     }}>Да, сбросить</button>
                     <button style={styles.cancelBtn} onClick={() => setConfirmReset(false)}>Отмена</button>
@@ -2876,6 +3259,77 @@ export default function App() {
       </div>
     );
   }
+
+  function GuidePage() {
+    return (
+      <div className="animate-in slide-in-from-bottom-3 duration-300" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        <div style={{ background: "white", padding: 24, borderRadius: 24, boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)" }}>
+          <h2 style={{ fontSize: 24, fontWeight: 900, color: "#1E293B", marginBottom: 16 }}>🚀 Как работает HomeOS?</h2>
+          
+          <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+            <div>
+                <h3 style={{ fontSize: 18, fontWeight: 800, color: "#4F46E5", display: "flex", alignItems: "center", gap: 10 }}>
+                    💎 Баланс и Деньги
+                </h3>
+                <p style={{ fontSize: 14, color: "#475569", marginTop: 8, lineHeight: 1.5 }}>
+                    Каждый понедельник у тебя есть <strong>10€</strong>. Это твой базовый бюджет.
+                    Если ты хорошо справляешься — к воскресенью сумма может вырасти в 2 раза! 💰
+                </p>
+            </div>
+
+            <div>
+                <h3 style={{ fontSize: 18, fontWeight: 800, color: "#EF4444", display: "flex", alignItems: "center", gap: 10 }}>
+                    🐛 Баги
+                </h3>
+                <p style={{ fontSize: 14, color: "#475569", marginTop: 8, lineHeight: 1.5 }}>
+                    Беспорядок — это «баг» в системе дома. Если баг закреплен за тобой, исправь его до дедлайна, иначе штраф <strong>-1.00€</strong>. 😱
+                </p>
+                <p style={{ fontSize: 14, color: "#475569", marginTop: 8, lineHeight: 1.5 }}>
+                    Если баг «ничей» (общий), изначальный штраф составляет <strong>-1.50€</strong>. Но если в течение <strong>1 часа</strong> ты вспомнишь, что это твой промах, и возьмёшь ответственность на себя — штраф снизится до <strong>1.00€</strong>. А если успеешь всё устранить до срока — штраф и вовсе исчезнет! ✨
+                </p>
+            </div>
+
+            <div>
+                <h3 style={{ fontSize: 18, fontWeight: 800, color: "#10B981", display: "flex", alignItems: "center", gap: 10 }}>
+                    📈 Биржа Труда
+                </h3>
+                <p style={{ fontSize: 14, color: "#475569", marginTop: 8, lineHeight: 1.5 }}>
+                    Хочешь разбогатеть? Иди на <strong>Биржу</strong>! Там висят задания от мамы или сестры. 
+                    Выполнил — получил гонорар. Фото-отчет теперь не обязателен, но так надежнее! ✨
+                </p>
+            </div>
+
+            <div>
+                <h3 style={{ fontSize: 18, fontWeight: 800, color: "#F59E0B", display: "flex", alignItems: "center", gap: 10 }}>
+                    🏋️ Сила и Здоровье
+                </h3>
+                <p style={{ fontSize: 14, color: "#475569", marginTop: 8, lineHeight: 1.5 }}>
+                    Сходил в зал? Нажми кнопку <strong>«Я в зале»</strong>! 
+                    Мама подтвердит, и ты получишь <strong>+4€</strong> в свою копилку. 🦾
+                </p>
+            </div>
+
+            <div style={{ background: "#F8FAFC", padding: 16, borderRadius: 16, border: "1px dashed #CBD5E1" }}>
+                <p style={{ fontSize: 13, color: "#64748B", textAlign: "center", fontWeight: 600 }}>
+                    Помни: HomeOS — это не про запреты, а про твою самостоятельность и честный профит! 💸🔥
+                </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const renderContent = () => {
+    if (view === "dashboard") return <Dashboard />;
+    if (view === "tasks") return <Tasks />;
+    if (view === "judge") return <Judge />;
+    if (view === "market") return <Market />;
+    if (view === "ledger") return <Ledger />;
+    if (view === "settings" && isAdmin) return <SettingsPage />;
+    if (view === "guide") return <GuidePage />;
+    return <Dashboard />;
+  };
 
   if (isLoading) {
     return (
@@ -3049,9 +3503,11 @@ export default function App() {
             <nav style={styles.sidebarNav}>
               {[
                 { id: "dashboard", label: "Обзор", count: isAdmin ? pendingGym.length : 0 },
+                { id: "tasks", label: "Задачи", count: state.kitchenDuty === activeUser && !state.kitchenDone ? 1 : 0 },
                 { id: "judge", label: isAdmin ? "Баги" : "Мои баги", count: openBugs.length },
                 { id: "market", label: "Биржа", count: state.jobs.filter(j => (j.status === 'open' || j.status === 'review') && !(j as any).isParentTask).length },
                 { id: "ledger", label: "Ledger" },
+                { id: "guide", label: "Справка" },
                 ...(isAdmin ? [{ id: "settings", label: "Настройки" } as const] : []),
               ].map((n) => (
                 <button
@@ -3101,7 +3557,7 @@ export default function App() {
               />
               <h1 style={styles.headerTitle}>
                 {isMobile ? "HomeOS" : (view === "dashboard" ? "Обзор" : view === "judge" ? "Баги" : view === "ledger" ? "Ledger" : "Выплата")}
-                {isMobile && <span style={{ marginLeft: 8, fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>v2.2</span>}
+                {isMobile && <span style={{ marginLeft: 8, fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>v{APP_VERSION}</span>}
               </h1>
             </div>
             <div style={styles.headerRight}>
@@ -3125,12 +3581,7 @@ export default function App() {
           </header>
 
           <main style={{ ...styles.main, padding: isMobile ? "16px 16px 80px 16px" : "32px" }}>
-            {view === "dashboard" && <Dashboard />}
-            {view === "tasks" && <Tasks />}
-            {view === "judge" && <Judge />}
-            {view === "market" && <Market />}
-            {view === "ledger" && <Ledger />}
-            {view === "settings" && isAdmin && <SettingsPage />}
+            {renderContent()}
           </main>
 
           {/* Bottom Navigation Bar (Mobile only) */}
@@ -3156,6 +3607,7 @@ export default function App() {
                 { id: "judge", icon: BugIcon, label: "Баги", count: openBugs.length },
                 { id: "market", icon: MarketIcon, label: "Биржа", count: state.jobs.filter(j => (j.status === 'open' || j.status === 'review') && !(j as any).isParentTask).length },
                 { id: "ledger", icon: ActivityIcon, label: "Лента" },
+                { id: "guide", icon: Sparkles, label: "Справка" },
                 ...(isAdmin ? [{ id: "settings", icon: SettingsIcon, label: "Настр" } as const] : []),
               ].map((item) => {
                 const Icon = item.icon;
