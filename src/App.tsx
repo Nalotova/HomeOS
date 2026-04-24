@@ -37,7 +37,7 @@ import firebaseConfig from '../firebase-applet-config.json';
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
-const APP_VERSION = "2.3.3";
+const APP_VERSION = "2.3.4";
 
 interface FirestoreErrorInfo {
   error: string;
@@ -176,6 +176,7 @@ interface AppState {
   pins: Record<string, string>;
   weeklyWinner: { name: string; emoji: string; week: string } | null;
   totalPaidOut: number;
+  generalMessage: string | null;
 }
 
 // ─── UTILS ────────────────────────────────────────────────────────
@@ -231,6 +232,7 @@ const defaultState = (): AppState => {
     pins: { admin: "0000", toma: "1111", valya: "2222" },
     weeklyWinner: null,
     totalPaidOut: 0,
+    generalMessage: null,
   };
 };
 
@@ -450,8 +452,12 @@ export default function App() {
   const notifiedDeadlines = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    if ("Notification" in window) {
-      setNotificationPermission(Notification.permission);
+    try {
+      if ("Notification" in window) {
+        setNotificationPermission(Notification.permission);
+      }
+    } catch (e) {
+      console.warn("Notification permission check failed", e);
     }
   }, []);
 
@@ -460,75 +466,87 @@ export default function App() {
         showToast("Ваш браузер не поддерживает уведомления", "error");
         return;
     }
-    const permission = await Notification.requestPermission();
-    setNotificationPermission(permission);
-    if (permission === "granted") {
-        showToast("Уведомления включены!", "success");
-        new Notification("HomeOS", { body: "Уведомления успешно настроены!", icon: "/logo.png" });
+    
+    try {
+        // Support both callback and promise-based API
+        const permission = await new Promise<NotificationPermission>((resolve) => {
+            const res = Notification.requestPermission(resolve);
+            if (res) res.then(resolve);
+        });
+        
+        setNotificationPermission(permission);
+        if (permission === "granted") {
+            showToast("Уведомления включены!", "success");
+            new Notification("HomeOS", { body: "Уведомления успешно настроены!", icon: "/logo.png" });
+        } else if (permission === "denied") {
+            showToast("Уведомления заблокированы в настройках браузера", "warn");
+        }
+    } catch (e) {
+        console.error("Error requesting notification permission:", e);
+        showToast("Не удалось включить уведомления", "error");
     }
   };
 
   useEffect(() => {
     if (!hasSynced || !activeUser || notificationPermission !== "granted") return;
 
-    // --- Bug Notifications for Children ---
-    if (activeUser !== 'admin') {
-        const newBugs = state.bugs.filter(b => b.id > lastSeenBugId.current);
-        newBugs.forEach(bug => {
-            // Rules: if no target -> notify both. if target is me -> notify me.
-            const isRelevant = (bug.target === null) || (bug.target === activeUser);
-            if (isRelevant) {
-                new Notification("🐛 Новый инцидент!", {
-                  body: bug.desc,
-                  icon: "/logo.png",
-                  tag: `bug-${bug.id}` // Collapse duplicates
+    try {
+        // --- Bug Notifications for Children ---
+        if (activeUser !== 'admin') {
+            const newBugs = state.bugs.filter(b => b.id > lastSeenBugId.current);
+            newBugs.forEach(bug => {
+                const isRelevant = (bug.target === null) || (bug.target === activeUser);
+                if (isRelevant) {
+                    new Notification("🐛 Новый инцидент!", { 
+                        body: bug.desc, 
+                        icon: "/logo.png",
+                        tag: `bug-${bug.id}`
+                    });
+                }
+            });
+
+            const newMarketJobs = state.jobs.filter(j => j.id > lastSeenJobId.current && j.status === 'open' && j.creator !== activeUser);
+            newMarketJobs.forEach(job => {
+                new Notification("💰 Новое задание на Бирже!", {
+                    body: `${job.title}\nНаграда: ${job.reward.toFixed(2)}€`,
+                    icon: "/logo.png",
+                    tag: `market-job-${job.id}`
                 });
-            }
-        });
-
-        // New Market Jobs
-        const newMarketJobs = state.jobs.filter(j => j.id > lastSeenJobId.current && j.status === 'open' && j.creator !== activeUser);
-        newMarketJobs.forEach(job => {
-            new Notification("💰 Новое задание на Бирже!", {
-                body: `${job.title}\nНаграда: ${job.reward.toFixed(2)}€`,
-                icon: "/logo.png",
-                tag: `market-job-${job.id}`
             });
-        });
-    }
+        }
 
-    // --- Admin Notifications ---
-    if (activeUser === 'admin') {
-        // Gym Requests
-        const newGym = state.gymLogs.filter(g => !g.confirmed && g.date + g.user !== lastSeenGymLogId.current);
-        newGym.forEach(g => {
-            const name = state.users[g.user]?.name || 'Ребенок';
-            new Notification("🏋️ Запрос на зал", {
-                body: `${name} в зале! Нужно подтверждение.`,
-                icon: "/logo.png",
-                tag: `gym-${g.date}-${g.user}`
+        // --- Admin Notifications ---
+        if (activeUser === 'admin') {
+            const newGym = state.gymLogs.filter(g => !g.confirmed && g.date + g.user !== lastSeenGymLogId.current);
+            newGym.forEach(g => {
+                const name = state.users[g.user]?.name || 'Ребенок';
+                new Notification("🏋️ Запрос на зал", {
+                    body: `${name} в зале! Нужно подтверждение.`,
+                    icon: "/logo.png",
+                    tag: `gym-${g.date}-${g.user}`
+                });
             });
-        });
 
-        // Admin Tasks (Jobs where assignee or title implies admin)
-        const newAdminJobs = state.jobs.filter(j => j.id > lastSeenJobId.current && j.assignee === 'admin');
-        newAdminJobs.forEach(job => {
-            new Notification("📝 Новое поручение", {
-                body: job.title,
-                icon: "/logo.png",
-                tag: `job-${job.id}`
+            const newAdminJobs = state.jobs.filter(j => j.id > lastSeenJobId.current && j.assignee === 'admin');
+            newAdminJobs.forEach(job => {
+                new Notification("📝 Новое поручение", {
+                    body: job.title,
+                    icon: "/logo.png",
+                    tag: `job-${job.id}`
+                });
             });
-        });
-    }
+        }
 
-    // Update markers
-    if (state.bugs.length > 0) lastSeenBugId.current = Math.max(...state.bugs.map(b => b.id), lastSeenBugId.current);
-    if (state.jobs.length > 0) lastSeenJobId.current = Math.max(...state.jobs.map(j => j.id), lastSeenJobId.current);
-    if (state.gymLogs.length > 0) {
-        const last = state.gymLogs[state.gymLogs.length - 1];
-        lastSeenGymLogId.current = last.date + last.user;
+        // Update markers
+        if (state.bugs.length > 0) lastSeenBugId.current = Math.max(...state.bugs.map(b => b.id), lastSeenBugId.current);
+        if (state.jobs.length > 0) lastSeenJobId.current = Math.max(...state.jobs.map(j => j.id), lastSeenJobId.current);
+        if (state.gymLogs.length > 0) {
+            const last = state.gymLogs[state.gymLogs.length - 1];
+            lastSeenGymLogId.current = last.date + last.user;
+        }
+    } catch (e) {
+        console.warn("Notification display failed", e);
     }
-
   }, [state.bugs, state.jobs, state.gymLogs, activeUser, hasSynced, notificationPermission]);
 
   useEffect(() => {
@@ -545,44 +563,48 @@ export default function App() {
   useEffect(() => {
     if (!hasSynced || !activeUser || notificationPermission !== "granted") return;
 
-    const now = Date.now();
-    const thirtyMins = 30 * 60 * 1000;
+    try {
+        const now = Date.now();
+        const thirtyMins = 30 * 60 * 1000;
 
-    // Check Bugs
-    state.bugs.forEach(bug => {
-        if (bug.status === 'open' && bug.target === activeUser) {
-            const deadline = new Date(bug.deadline).getTime();
-            const timeUntil = deadline - now;
-            const tag = `deadline-bug-${bug.id}`;
+        // Check Bugs
+        state.bugs.forEach(bug => {
+            if (bug.status === 'open' && bug.target === activeUser) {
+                const deadline = new Date(bug.deadline).getTime();
+                const timeUntil = deadline - now;
+                const tag = `deadline-bug-${bug.id}`;
 
-            if (timeUntil > 0 && timeUntil <= thirtyMins && !notifiedDeadlines.current.has(tag)) {
-                new Notification("⏰ Время истекает!", {
-                    body: `Осталось 30 минут, чтобы исправить баг: ${bug.desc}`,
-                    icon: "/logo.png",
-                    tag
-                });
-                notifiedDeadlines.current.add(tag);
+                if (timeUntil > 0 && timeUntil <= thirtyMins && !notifiedDeadlines.current.has(tag)) {
+                    new Notification("⏰ Время истекает!", {
+                        body: `Осталось 30 минут, чтобы исправить баг: ${bug.desc}`,
+                        icon: "/logo.png",
+                        tag
+                    });
+                    notifiedDeadlines.current.add(tag);
+                }
             }
-        }
-    });
+        });
 
-    // Check Jobs
-    state.jobs.forEach(job => {
-        if (job.status === 'in_progress' && job.assignee === activeUser) {
-            const deadline = new Date(job.deadline).getTime();
-            const timeUntil = deadline - now;
-            const tag = `deadline-job-${job.id}`;
+        // Check Jobs
+        state.jobs.forEach(job => {
+            if (job.status === 'in_progress' && job.assignee === activeUser) {
+                const deadline = new Date(job.deadline).getTime();
+                const timeUntil = deadline - now;
+                const tag = `deadline-job-${job.id}`;
 
-            if (timeUntil > 0 && timeUntil <= thirtyMins && !notifiedDeadlines.current.has(tag)) {
-                new Notification("⏳ Дедлайн на Бирже!", {
-                    body: `Осталось 30 минут для задачи: ${job.title}`,
-                    icon: "/logo.png",
-                    tag
-                });
-                notifiedDeadlines.current.add(tag);
+                if (timeUntil > 0 && timeUntil <= thirtyMins && !notifiedDeadlines.current.has(tag)) {
+                    new Notification("⏳ Дедлайн на Бирже!", {
+                        body: `Осталось 30 минут для задачи: ${job.title}`,
+                        icon: "/logo.png",
+                        tag
+                    });
+                    notifiedDeadlines.current.add(tag);
+                }
             }
-        }
-    });
+        });
+    } catch (e) {
+        console.warn("Deadline notification failed", e);
+    }
   }, [tick, state.bugs, state.jobs, activeUser, hasSynced, notificationPermission]);
 
   const persist = useCallback((updater: AppState | ((prev: AppState) => AppState), forceServerUpdate = true) => {
@@ -849,20 +871,24 @@ export default function App() {
         // Housekeeping Overdue Migrations
         if (kitchenOverdue && !s.kitchenTasks["overdue_migrated"]) {
             const dutyUser = s.kitchenDuty;
-            nextUsers[dutyUser] = { ...nextUsers[dutyUser], balance: nextUsers[dutyUser].balance - 2.0 };
-            nextWeeklyLog.push({ date: todayISO(), user: dutyUser, event: 'kitchen_late', delta: -2.0, note: "Просрочка кухни (миграция)" });
+            const kitchenTaskNames = Object.keys(s.kitchenTasks || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k));
             
-            // Move to market
-            nextJobs.push({
-                id: Date.now() + 1,
-                creator: 'admin',
-                title: "КУХНЯ: Хвосты от " + s.users[dutyUser].name,
-                reward: 2,
-                deadline: new Date(Date.now() + 2 * 3600000).toISOString(),
-                status: 'open',
-                assignee: null,
-                created: todayISO()
-            });
+            if (kitchenTaskNames.length > 0) {
+                nextUsers[dutyUser] = { ...nextUsers[dutyUser], balance: nextUsers[dutyUser].balance - 2.0 };
+                nextWeeklyLog.push({ date: todayISO(), user: dutyUser, event: 'kitchen_late', delta: -2.0, note: "Просрочка кухни (миграция)" });
+                
+                // Move to market
+                nextJobs.push({
+                    id: Date.now() + 1,
+                    creator: 'admin',
+                    title: "КУХНЯ: Хвосты от " + s.users[dutyUser].name,
+                    reward: 2,
+                    deadline: new Date(Date.now() + 2 * 3600000).toISOString(),
+                    status: 'open',
+                    assignee: null,
+                    created: todayISO()
+                });
+            }
 
             nextKitchenDone = true; 
             s.kitchenTasks["overdue_migrated"] = true; // Local flag for this check
@@ -871,20 +897,24 @@ export default function App() {
         if (cleaningOverdue) {
             Object.keys(s.cleaningDone).forEach(u => {
                 if (!s.cleaningDone[u] && !s.cleaningTasks[u]?.["overdue_migrated"]) {
-                    nextUsers[u] = { ...nextUsers[u], balance: nextUsers[u].balance - 2.0 };
-                    nextWeeklyLog.push({ date: todayISO(), user: u, event: 'kitchen_late', delta: -2.0, note: "Просрочка уборки" });
+                    const cleaningTaskNames = Object.keys(s.cleaningTasks[u] || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k));
                     
-                     // Move to market
-                    nextJobs.push({
-                        id: Date.now() + 2,
-                        creator: 'admin',
-                        title: "УБОРКА: Хвосты от " + s.users[u].name,
-                        reward: 2,
-                        deadline: new Date(Date.now() + 4 * 3600000).toISOString(),
-                        status: 'open',
-                        assignee: null,
-                        created: todayISO()
-                    });
+                    if (cleaningTaskNames.length > 0) {
+                        nextUsers[u] = { ...nextUsers[u], balance: nextUsers[u].balance - 2.0 };
+                        nextWeeklyLog.push({ date: todayISO(), user: u, event: 'kitchen_late', delta: -2.0, note: "Просрочка уборки" });
+                        
+                         // Move to market
+                        nextJobs.push({
+                            id: Date.now() + 2,
+                            creator: 'admin',
+                            title: "УБОРКА: Хвосты от " + s.users[u].name,
+                            reward: 2,
+                            deadline: new Date(Date.now() + 4 * 3600000).toISOString(),
+                            status: 'open',
+                            assignee: null,
+                            created: todayISO()
+                        });
+                    }
 
                     nextCleaningDone[u] = true;
                     if (!s.cleaningTasks[u]) s.cleaningTasks[u] = {};
@@ -1466,6 +1496,33 @@ export default function App() {
             <p style={{ fontSize: 15, color: "#475569", fontWeight: 500, lineHeight: 1.5, maxWidth: "85%" }}>{greeting.text}</p>
           </div>
         </div>
+        
+        {/* GENERAL MESSAGE */}
+        {state.generalMessage && (
+            <div className="animate-in fade-in zoom-in duration-300" style={{ 
+                background: "#FEF2F2", 
+                border: "2px solid #FCA5A5", 
+                padding: "20px", 
+                borderRadius: 20,
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                boxShadow: "0 4px 6px -1px rgba(239, 68, 68, 0.1)"
+            }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#991B1B", fontWeight: 800, fontSize: 16 }}>
+                    <span>📢 Важное сообщение</span>
+                </div>
+                <p style={{ color: "#7F1D1D", fontSize: 15, fontWeight: 500, margin: 0, whiteSpace: "pre-wrap" }}>
+                    {state.generalMessage}
+                </p>
+                <button 
+                  onClick={() => persist(s => ({ ...s, generalMessage: null }))}
+                  style={{ alignSelf: "flex-end", background: "#FCA5A5", color: "#7F1D1D", border: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, marginTop: 4, cursor: "pointer" }}
+                >
+                    Прочитано
+                </button>
+            </div>
+        )}
 
         {!isAdmin && activeUser && (
           <div style={styles.section}>
@@ -1673,7 +1730,7 @@ export default function App() {
         persist(s => ({ ...s, kitchenTasks: nextTasks }));
     };
 
-    const allKitchenDone = tasks.length > 0 && tasks.every(t => taskState[t]);
+    const allKitchenDone = tasks.every(t => taskState[t]);
     
     // Helpers for timers/progress
     const now = new Date();
@@ -1686,7 +1743,7 @@ export default function App() {
         const hours = Math.floor(ms / (1000 * 60 * 60));
         const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
         if (ms <= 0) return "Дедлайн просрочен ⚠️";
-        return `🕒 ${hours} ч ${minutes} мин до штрафа`;
+        return `🕒 Осталось ${hours} ч ${minutes} мин`;
     };
 
     // Personalized Filtering
@@ -1985,22 +2042,22 @@ export default function App() {
                                         </div>
                                     )}
 
-                                    {taskNames.length > 0 && !wasteDone[u] && (
+                                    {!wasteDone[u] && (
                                         <div style={{ marginTop: 16 }}>
                                             <button 
-                                                disabled={!taskNames.every(tn => uTasks[tn]) || (activeUser !== u && !isAdmin)}
+                                                disabled={(taskNames.length > 0 && !taskNames.every(tn => uTasks[tn])) || (activeUser !== u && !isAdmin)}
                                                 style={{ 
                                                     ...styles.primaryBtn, 
                                                     width: "100%", 
-                                                    background: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "#059669" : "#CBD5E1",
-                                                    cursor: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "pointer" : "not-allowed",
+                                                    background: ((taskNames.length === 0 || taskNames.every(tn => uTasks[tn])) && (activeUser === u || isAdmin)) ? "#059669" : "#CBD5E1",
+                                                    cursor: ((taskNames.length === 0 || taskNames.every(tn => uTasks[tn])) && (activeUser === u || isAdmin)) ? "pointer" : "not-allowed",
                                                     fontSize: 14,
                                                     height: 48,
-                                                    boxShadow: taskNames.every(tn => uTasks[tn]) ? "0 4px 6px -1px rgba(16, 185, 129, 0.2)" : "none"
+                                                    boxShadow: (taskNames.length === 0 || taskNames.every(tn => uTasks[tn])) ? "0 4px 6px -1px rgba(16, 185, 129, 0.2)" : "none"
                                                 }}
                                                 onClick={() => markWasteDone(u as 'toma' | 'valya')}
                                             >
-                                                {!taskNames.every(tn => uTasks[tn]) ? `Сначала выполните задачи (${taskNames.filter(tn => !uTasks[tn]).length})` : "ЗАВЕРШИТЬ ВЫНОС ✅"}
+                                                {taskNames.length === 0 ? "В ЭТОТ РАЗ БЕЗ ЗАДАЧ — ЗАВЕРШИТЬ ✅" : (!taskNames.every(tn => uTasks[tn]) ? `Сначала выполните задачи (${taskNames.filter(tn => !uTasks[tn]).length})` : "ЗАВЕРШИТЬ ВЫНОС ✅")}
                                             </button>
                                         </div>
                                     )}
@@ -2030,7 +2087,7 @@ export default function App() {
                             );
                         })}
                         
-                        {hasAnyWasteTasks && !usersToShowWaste.every(u => wasteDone[u]) && (
+                        {hasAnyWasteTasks && !usersToShowWaste.every(u => wasteDone[u] || (Object.keys(state.wastes[u] || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k)).length === 0)) && (
                             <>
                                 <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#EF4444", width: `${Math.min(100, Math.max(0, ((now.getHours() * 60 + now.getMinutes()) / (18 * 60)) * 100))}%` }}></div></div>
                                 <div style={{ marginTop: 8, fontSize: 13, color: wasteRemaining < (3 * 60 * 60 * 1000) ? "#DC2626" : "#64748B", fontWeight: 700, textAlign: "center" }}>
@@ -2181,22 +2238,22 @@ export default function App() {
                                         </div>
                                     )}
 
-                                    {taskNames.length > 0 && !state.cleaningDone[u] && (
+                                    {!state.cleaningDone[u] && (
                                         <div style={{ marginTop: 16 }}>
                                             <button 
-                                                disabled={!taskNames.every(tn => uTasks[tn]) || (activeUser !== u && !isAdmin)}
+                                                disabled={(taskNames.length > 0 && !taskNames.every(tn => uTasks[tn])) || (activeUser !== u && !isAdmin)}
                                                 style={{ 
                                                     ...styles.primaryBtn, 
                                                     width: "100%", 
-                                                    background: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "#059669" : "#CBD5E1",
-                                                    cursor: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "pointer" : "not-allowed",
+                                                    background: ((taskNames.length === 0 || taskNames.every(tn => uTasks[tn])) && (activeUser === u || isAdmin)) ? "#059669" : "#CBD5E1",
+                                                    cursor: ((taskNames.length === 0 || taskNames.every(tn => uTasks[tn])) && (activeUser === u || isAdmin)) ? "pointer" : "not-allowed",
                                                     fontSize: 14,
                                                     height: 48,
-                                                    boxShadow: taskNames.every(tn => uTasks[tn]) ? "0 4px 6px -1px rgba(16, 185, 129, 0.2)" : "none"
+                                                    boxShadow: (taskNames.length === 0 || taskNames.every(tn => uTasks[tn])) ? "0 4px 6px -1px rgba(16, 185, 129, 0.2)" : "none"
                                                 }}
                                                 onClick={() => markCleaningDone(u as 'toma' | 'valya')}
                                             >
-                                                {!taskNames.every(tn => uTasks[tn]) ? `Сначала выполните задачи (${taskNames.filter(tn => !uTasks[tn]).length})` : "ЗАВЕРШИТЬ УБОРКУ ✅"}
+                                                {taskNames.length === 0 ? "В ЭТОТ РАЗ БЕЗ ЗАДАЧ — ЗАВЕРШИТЬ ✅" : (!taskNames.every(tn => uTasks[tn]) ? `Сначала выполните задачи (${taskNames.filter(tn => !uTasks[tn]).length})` : "ЗАВЕРШИТЬ УБОРКУ ✅")}
                                             </button>
                                         </div>
                                     )}
@@ -2226,11 +2283,11 @@ export default function App() {
                             );
                         })}
 
-                        {hasAnyCleaningTasks && !usersToShowWaste.every(u => state.cleaningDone[u]) && (
+                        {hasAnyCleaningTasks && !usersToShowWaste.every(u => state.cleaningDone[u] || (Object.keys(state.cleaningTasks[u] || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k)).length === 0)) && (
                             <>
                                 <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#10B981", width: `${Math.min(100, Math.max(0, ((now.getHours() * 60 + now.getMinutes()) / (18 * 60)) * 100))}%` }}></div></div>
                                 <div style={{ marginTop: 8, fontSize: 13, color: cleaningRemaining < (3 * 60 * 60 * 1000) ? "#DC2626" : "#64748B", fontWeight: 700, textAlign: "center" }}>
-                                    {formatTime(cleaningRemaining)} до штрафа за уборку
+                                    {formatTime(cleaningRemaining)}
                                 </div>
                             </>
                         )}
@@ -2499,6 +2556,7 @@ export default function App() {
 
   function Ledger() {
     const [filterUser, setFilterUser] = useState<string>("all");
+    const [deleteConfirmIdx, setConfirmDeleteIdx] = useState<number | null>(null);
 
     const keyedLogs = state.weeklyLog.map((log, index) => ({ ...log, originalIdx: index }));
 
@@ -2583,24 +2641,31 @@ export default function App() {
                       <td style={{ ...styles.td, textAlign: "right", paddingRight: 12 }}>
                         <button 
                           style={{ 
-                            background: "#FEF2F2", 
-                            border: "1px solid #FEE2E2", 
+                            background: deleteConfirmIdx === tx.originalIdx ? "#EF4444" : "#FEF2F2", 
+                            border: deleteConfirmIdx === tx.originalIdx ? "1px solid #DC2626" : "1px solid #FEE2E2", 
                             cursor: "pointer", 
-                            color: "#EF4444", 
+                            color: deleteConfirmIdx === tx.originalIdx ? "white" : "#EF4444", 
                             padding: "6px 10px", 
                             borderRadius: 8,
                             display: "inline-flex",
                             alignItems: "center",
-                            gap: 4
+                            gap: 4,
+                            transition: "all 0.2s"
                           }}
                           onClick={() => {
-                            if (window.confirm("Удалить эту транзакцию и вернуть средства?")) {
+                            if (deleteConfirmIdx === tx.originalIdx) {
                               deleteLogEntry(tx.originalIdx);
+                              setConfirmDeleteIdx(null);
+                            } else {
+                              setConfirmDeleteIdx(tx.originalIdx);
+                              setTimeout(() => setConfirmDeleteIdx(null), 3000);
                             }
                           }}
                         >
                           <Trash2 size={14} />
-                          <span style={{ fontSize: 11, fontWeight: 700 }}>Удалить</span>
+                          <span style={{ fontSize: 11, fontWeight: 700 }}>
+                            {deleteConfirmIdx === tx.originalIdx ? "Уверены?" : "Удалить"}
+                          </span>
                         </button>
                       </td>
                     )}
@@ -2990,11 +3055,32 @@ export default function App() {
   }
 
   function SettingsPage() {
+    const [clearMediaConfirm, setClearMediaConfirm] = useState(false);
     const [confirmReset, setConfirmReset] = useState(false);
     const [confirmMaster, setConfirmMaster] = useState(false);
+    const [localMessage, setLocalMessage] = useState(state.generalMessage || "");
 
     return (
       <div className="animate-in slide-in-from-bottom-3 duration-300" style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+        {activeUser === 'admin' && (
+            <div style={styles.section}>
+                <h3 style={styles.sectionTitle}>Сообщение детям</h3>
+                <div style={styles.card}>
+                    <textarea 
+                        value={localMessage}
+                        onChange={(e) => setLocalMessage(e.target.value)}
+                        placeholder="Напишите важное сообщение для всех..."
+                        style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #CBD5E1", minHeight: 80 }}
+                    />
+                    <button 
+                        style={{ ...styles.primaryBtn, width: '100%', marginTop: 10, background: "#6366F1" }}
+                        onClick={() => persist(s => ({ ...s, generalMessage: localMessage || null }))}
+                    >
+                        Отправить сообщение детям
+                    </button>
+                </div>
+            </div>
+        )}
         <div style={styles.section}>
           <h3 style={styles.sectionTitle}>Безопасность и PIN-коды</h3>
           <div style={styles.card}>
@@ -3142,14 +3228,18 @@ export default function App() {
                 <p style={{ fontSize: 12, color: "#64748B" }}>Удаляет все фотографии из багов и заданий, освобождая место в облаке. Сами записи останутся.</p>
               </div>
               <button 
-                style={{ ...styles.primaryBtn, background: "#6366F1" }} 
+                style={{ ...styles.primaryBtn, background: clearMediaConfirm ? "#EF4444" : "#6366F1", transition: "all 0.2s" }} 
                 onClick={() => {
-                  if (window.confirm("Удалить все фотографии из текущих записей? Это действие необратимо.")) {
+                  if (clearMediaConfirm) {
                     clearAllMedia();
+                    setClearMediaConfirm(false);
+                  } else {
+                    setClearMediaConfirm(true);
+                    setTimeout(() => setClearMediaConfirm(false), 3000);
                   }
                 }}
               >
-                Очистить фото
+                {clearMediaConfirm ? "Точно удалить?" : "Очистить фото"}
               </button>
             </div>
           </div>

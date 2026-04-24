@@ -25,13 +25,36 @@
         border-radius: 50%;
         animation: spin 1s linear infinite;
       }
+      #fallback {
+        display: none;
+        position: fixed;
+        top: 60%;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-family: sans-serif;
+        color: #64748b;
+        font-size: 14px;
+        padding: 20px;
+      }
       @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
   </head>
   <body>
     <div id="root"></div>
+    <div id="fallback">
+      <p>Загрузка затянулась... 🤔</p>
+      <button onclick="location.reload()" style="background:#6366f1; color:white; border:none; padding:8px 16px; border-radius:8px; cursor:pointer;">Обновить страницу</button>
+      <p style="font-size:10px; margin-top:10px;">Если не помогает, попробуйте открыть в браузере</p>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
+      setTimeout(() => {
+        if (document.getElementById('root').innerHTML === "") {
+          document.getElementById('fallback').style.display = "block";
+        }
+      }, 10000);
+      
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js').catch(err => {
