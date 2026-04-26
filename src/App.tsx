@@ -2214,7 +2214,7 @@ export default function App() {
     useEffect(() => { const timer = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(timer); }, []);
 
     const activeJobs = state.jobs.filter(j => j.status !== 'resolved' && j.status !== 'expired');
-    const marketJobs = activeJobs.filter(j => !(j as any).isParentTask && j.reward > 0);
+    const marketJobs = activeJobs.filter(j => !(j as any).isParentTask);
     const adminRequests = activeJobs.filter(j => (j as any).isParentTask);
 
     const displayedJobs = marketJobs;
