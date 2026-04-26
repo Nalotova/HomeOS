@@ -1,0 +1,91 @@
+export const styles = {
+  root: { minHeight: "100vh", background: "#F8FAFC", display: "flex", flexDirection: "column" as "column" },
+  desktopWrapper: { display: "flex", flex: 1, height: "100vh", overflow: "hidden" as "hidden" },
+  sidebar: { width: 260, background: "#0F172A", color: "#FFFFFF", display: "flex", flexDirection: "column" as "column", borderRight: "1px solid #1E293B" },
+  sidebarHeader: { padding: "24px", borderBottom: "1px solid #1E293B", display: "flex", alignItems: "center", gap: 12 },
+  sidebarLogo: { fontWeight: 700, fontSize: 18, color: "rgba(148, 163, 184, 0.4)", letterSpacing: "-0.5px" },
+  sidebarLogoIcon: { width: 32, height: 32, background: "#6366F1", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "bold" },
+  sidebarNav: { flex: 1, padding: "16px", display: "flex", flexDirection: "column" as "column", gap: 8 },
+  sidebarNavBtn: { padding: "10px 16px", borderRadius: 8, border: "none", background: "none", cursor: "pointer", fontSize: 14, fontWeight: 500, color: "#94A3B8", textAlign: "left" as "left", transition: "all 0.2s" },
+  sidebarNavBtnActive: { background: "#4F46E5", color: "#FFFFFF" },
+  sidebarFooter: { padding: "24px", borderTop: "1px solid #1E293B" },
+  userProfile: { display: "flex", alignItems: "center", gap: 12 },
+  userAvatar: { width: 40, height: 40, borderRadius: "50%", background: "#334155", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 },
+  userName: { fontSize: 13, fontWeight: 600, color: "#FFFFFF" },
+  userRole: { fontSize: 10, color: "#64748B", textTransform: "uppercase" as "uppercase" },
+
+  mainWrapper: { flex: 1, display: "flex", flexDirection: "column" as "column", overflow: "hidden" as "hidden" },
+  header: { height: 64, background: "#FFFFFF", borderBottom: "1px solid #E2E8F0", padding: "0 32px", display: "flex", alignItems: "center", justifyContent: "space-between", boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.05)" },
+  headerTitle: { fontSize: 18, fontWeight: 600, color: "#1E293B" },
+  headerRight: { display: "flex", alignItems: "center", gap: 16 },
+  searchBar: { background: "#F1F5F9", border: "none", borderRadius: 20, padding: "6px 16px", fontSize: 14, width: 240, outline: "none" },
+  userBtn: { padding: "6px 12px", background: "#F1F5F9", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600, color: "#475569" },
+  
+  main: { flex: 1, padding: 32, overflowY: "auto" as "auto", display: "flex", flexDirection: "column" as "column", gap: 32 },
+  
+  toast: { position: "fixed" as "fixed", top: 20, left: "50%", transform: "translateX(-50%)", color: "#fff", padding: "10px 20px", borderRadius: 12, fontSize: 14, fontWeight: 600, zIndex: 1000, whiteSpace: "nowrap" as "nowrap", boxShadow: "0 4px 20px rgba(0,0,0,0.15)" },
+  
+  balanceGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16 },
+  balanceCard: { background: "#FFFFFF", borderRadius: 16, padding: 20, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)" },
+  balanceCardActive: { border: "1px solid #6366F1", boxShadow: "0 0 0 2px rgba(99, 102, 241, 0.1)" },
+  cardLabel: { fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase" as "uppercase", trackingWider: 1, marginBottom: 8 },
+  balanceAmount: { fontSize: 30, fontWeight: 700, color: "#0F172A", margin: "4px 0", fontFamily: "DM Mono, monospace" },
+  balanceSub: { display: "flex", alignItems: "flex-end", gap: 8, marginTop: 12 },
+  statusPillSuccess: { fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#ECFDF5", color: "#059669" },
+  progressBar: { marginTop: 16, height: 6, width: "100%", background: "#F1F5F9", borderRadius: 3, overflow: "hidden" as "hidden" },
+  progressFill: { height: "100%", background: "#6366F1", borderRadius: 3 },
+
+  section: { display: "flex", flexDirection: "column" as "column", gap: 16 },
+  sectionTitle: { fontSize: 14, fontWeight: 600, color: "#1E293B" },
+  
+  card: { background: "#FFFFFF", borderRadius: 16, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)", overflow: "hidden" as "hidden" },
+  cardHeader: { padding: "16px 24px", borderBottom: "1px solid #F1F5F9", display: "flex", justifyContent: "space-between", alignItems: "center" },
+  cardContent: { padding: 0 },
+
+  table: { width: "100%", borderCollapse: "collapse" as "collapse", textAlign: "left" as "left" },
+  thead: { background: "#F8FAFC", color: "#64748B", fontSize: 10, fontWeight: 700, textTransform: "uppercase" as "uppercase" },
+  th: { padding: "12px 16px", fontWeight: 700, whiteSpace: "nowrap" as "nowrap" },
+  tr: { borderBottom: "1px solid #F1F5F9", transition: "background 0.2s" },
+  td: { padding: "12px 16px", fontSize: 13, color: "#475569" },
+  tdBold: { fontWeight: 500, color: "#0F172A" },
+
+  dutyCard: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 24px", borderBottom: "1px solid #F1F5F9", gap: 12, flexWrap: "wrap" as "wrap" },
+  dutyLeft: { display: "flex", gap: 12, alignItems: "center", flex: 1, minWidth: 200 },
+  dutyEmoji: { width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: "#F1F5F9", borderRadius: 8, fontSize: 18 },
+  dutyName: { fontSize: 14, fontWeight: 500, color: "#0F172A" },
+  dutySub: { fontSize: 12, color: "#64748B" },
+  
+  badge: { padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600 },
+  badgeIndigo: { background: "#EEF2FF", color: "#4F46E5" },
+  badgeEmerald: { background: "#ECFDF5", color: "#059669" },
+  badgeAmber: { background: "#FFFBEB", color: "#B45309" },
+
+  primaryBtn: { padding: "8px 16px", background: "#4F46E5", color: "#FFFFFF", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 500, transition: "background 0.2s" },
+  dangerBtn: { padding: "8px 16px", background: "#F87171", color: "#FFFFFF", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 500 },
+
+  quickActions: { display: "flex", gap: 12 },
+  quickBtn: { flex: 1, padding: "12px", background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 12, cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#475569", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.05)" },
+
+  // Judge
+  bugCard: { padding: 16, background: "#fff", borderBottom: "1px solid #F1F5F9", position: "relative" as "relative" },
+  bugTarget: { fontSize: 13, fontWeight: 700, color: "#1E293B", textTransform: "uppercase" as "uppercase", trackingWider: 1 },
+  bugTimer: { fontSize: 12, fontWeight: 700 },
+  bugDesc: { fontSize: 15, color: "#475569", lineHeight: 1.5, margin: "12px 0" },
+  
+  // Overlay/Modal
+  overlay: { position: "fixed" as "fixed", inset: 0, background: "rgba(15, 23, 42, 0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, backdropFilter: "blur(8px)", padding: 16 },
+  modal: { background: "#FFFFFF", borderRadius: 24, padding: "24px 20px", width: "100%", maxWidth: 440, boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.5)", maxHeight: "90vh", overflowY: "auto" as "auto" },
+  modalTitle: { fontSize: 20, fontWeight: 700, color: "#0F172A", marginBottom: 8, letterSpacing: "-0.5px" },
+  modalSub: { fontSize: 13, color: "#EF4444", fontWeight: 600, marginBottom: 24 },
+  formGroup: { marginBottom: 20 },
+  label: { display: "block", fontSize: 12, fontWeight: 700, color: "#64748B", textTransform: "uppercase" as "uppercase", marginBottom: 8 },
+  segmented: { display: "flex", background: "#F1F5F9", borderRadius: 12, padding: 4, gap: 4 },
+  segBtn: { flex: 1, padding: "8px 4px", borderRadius: 8, border: "none", background: "none", fontSize: 12, fontWeight: 600, color: "#64748B", cursor: "pointer", transition: "all 0.2s" },
+  segBtnActive: { background: "#FFFFFF", color: "#4F46E5", boxShadow: "0 2px 4px rgba(0,0,0,0.05)" },
+  textarea: { width: "100%", height: 100, padding: 16, borderRadius: 12, border: "1px solid #E2E8F0", outline: "none", fontSize: 14, color: "#1E293B", transition: "border 0.2s" },
+  modalActions: { display: "flex", gap: 12, marginTop: 24 },
+  cancelBtn: { padding: "12px 16px", background: "#F1F5F9", color: "#475569", border: "none", borderRadius: 12, cursor: "pointer", fontWeight: 600, fontSize: 14 },
+  payoutPreview: { background: "#F8FAFC", borderRadius: 16, padding: 16, marginTop: 16, display: "flex", flexDirection: "column" as "column", gap: 12 },
+  payoutRow: { display: "flex", justifyContent: "space-between", fontSize: 14 },
+  payoutNote: { fontSize: 12, color: "#64748B", lineHeight: 1.5 },
+};

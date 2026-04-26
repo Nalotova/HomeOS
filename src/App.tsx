@@ -29,35 +29,17 @@ import {
   RefreshCw,
   Bell
 } from "lucide-react";
-import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, onSnapshot, setDoc, getDocFromServer } from 'firebase/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
-
-// ─── FIREBASE SETUP ────────────────────────────────────────────────────────
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+import { AppState, Bug, Job, WeeklyLogEntry } from './types';
+import { styles } from './styles';
+import { Sidebar } from './components/Sidebar';
+import { Dashboard } from './components/Dashboard';
+import { Ledger } from './components/Ledger';
+import { app, db, handleFirestoreError } from "./services/firebase";
+import { useAppState } from './hooks/useAppState';
+import { sendTelegramMessage } from "./services/telegramService";
+import { doc, onSnapshot, setDoc, getDocFromServer } from 'firebase/firestore';
 
 const APP_VERSION = "2.3.4";
-
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: 'create' | 'update' | 'delete' | 'list' | 'get' | 'write';
-  path: string | null;
-}
-
-const handleFirestoreError = (err: any, type: FirestoreErrorInfo['operationType'], path: string | null = null) => {
-  console.error(`Firestore Error [${type}] at ${path}:`, err);
-  const info: FirestoreErrorInfo = {
-    error: err.message || "Unknown error",
-    operationType: type,
-    path
-  };
-  // Detailed feedback for 1MB limit which is common with base64 images
-  if (err.message?.includes("too large") || err.code === "resource-exhausted") {
-    return "Файл слишком большой для сохранения (лимит 1MB). Попробуйте сжать изображение.";
-  }
-  return "Ошибка синхронизации данных";
-};
 
 // Image compression helper to keep AppState < 1MB
 const compressImage = (base64: string, maxWidth = 800, maxHeight = 800, quality = 0.7): Promise<string> => {
@@ -90,94 +72,6 @@ const compressImage = (base64: string, maxWidth = 800, maxHeight = 800, quality 
   });
 };
 
-// ─── TYPES ──────────────────────────────────────────────────────────────────
-interface User {
-  name: string;
-  emoji: string;
-  balance: number;
-  gymWallet: number;
-  totalEarned: number;
-}
-
-interface Bug {
-  id: number;
-  target: 'toma' | 'valya' | null;
-  desc: string;
-  photo: string;
-  resolutionPhoto?: string;
-  status: 'open' | 'review' | 'resolved' | 'expired';
-  deadline: string;
-  created: string;
-  autoAssignAt: string | null;
-  fined: boolean;
-  fine?: number;
-}
-
-interface GymLog {
-  user: string;
-  date: string;
-  confirmed: boolean;
-}
-
-interface Job {
-  id: number;
-  creator: 'admin' | 'toma' | 'valya';
-  title: string;
-  reward: number;
-  deadline: string;
-  status: 'open' | 'in_progress' | 'review' | 'resolved' | 'expired';
-  assignee: 'toma' | 'valya' | null;
-  photo?: string;
-  resolutionPhoto?: string;
-  isParentTask?: boolean;
-  created: string;
-  linkedTask?: {
-    type: 'waste' | 'cleaning' | 'kitchen';
-    user: 'toma' | 'valya';
-    title: string;
-  };
-}
-
-interface WeeklyLogEntry {
-  date: string;
-  user: string;
-  event: 'kitchen_late' | 'gym' | 'bug_fine' | 'expense' | 'base' | 'job_reward' | 'job_payment';
-  delta: number;
-  note?: string;
-}
-
-interface Payout {
-  week: string;
-  date: string;
-  toma: number;
-  valya: number;
-}
-
-interface AppState {
-  week: string;
-  users: Record<string, User>;
-  kitchenDuty: 'toma' | 'valya';
-  kitchenDone: boolean;
-  kitchenTasks: Record<string, boolean>;
-  kitchenDeadline: string | null;
-  monthlyZones: Record<string, string>;
-  wastes: Record<string, Record<string, boolean>>;
-  wasteDone: Record<string, boolean>;
-  cleaningTasks: Record<string, Record<string, boolean>>;
-  cleaningDone: Record<string, boolean>;
-  bugs: Bug[];
-  jobs: Job[];
-  gymLogs: GymLog[];
-  weeklyLog: WeeklyLogEntry[];
-  payouts: Payout[];
-  lastKitchenRotation: string | null;
-  lastMonthlyRotation: string | null;
-  lastBugTarget: 'toma' | 'valya' | null;
-  pins: Record<string, string>;
-  weeklyWinner: { name: string; emoji: string; week: string } | null;
-  totalPaidOut: number;
-  generalMessage: string | null;
-}
 
 // ─── UTILS ────────────────────────────────────────────────────────
 const defaultState = (): AppState => {
@@ -260,9 +154,16 @@ function useIsMobile() {
 
 export default function App() {
   const isMobile = useIsMobile();
-  const [state, setState] = useState<AppState>(defaultState());
-  const [hasSynced, setHasSynced] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(true);
+
+  const [toast, setToast] = useState<{ msg: string; type: "info" | "success" | "warn" | "error" } | null>(null);
+
+  const showToast = useCallback((msg: string, type: "info" | "success" | "warn" | "error" = "info") => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  const { state, persist, hasSynced, isSyncing } = useAppState(defaultState, showToast);
+
   const [view, setView] = useState<"dashboard" | "judge" | "ledger" | "settings" | "market" | "guide" | "tasks">("dashboard");
   const [activeUser, setActiveUser] = useState<"toma" | "valya" | "admin" | null>(() => {
     try {
@@ -276,7 +177,8 @@ export default function App() {
   const isAdmin = activeUser === "admin";
 
   const deleteLogEntry = (idx: number) => {
-    if (!isAdmin) return;
+    console.log("deleting log at index:", idx);                
+    if (!isAdmin && state.weeklyLog[idx].user !== activeUser) return;
     
     persist(s => {
       const entry = s.weeklyLog[idx];
@@ -285,16 +187,29 @@ export default function App() {
       const nextLogs = [...s.weeklyLog];
       nextLogs.splice(idx, 1);
       
-      const nextUsers = { ...s.users };
       const u = entry.user as "toma" | "valya";
-      if (u === 'toma' || u === 'valya') {
-        if (entry.event === 'gym') {
-          nextUsers[u].gymWallet = (nextUsers[u].gymWallet || 0) - entry.delta;
-        } else {
-          nextUsers[u].balance = (nextUsers[u].balance || 0) - entry.delta;
-        }
+      const user = s.users[u];
+      if (!user) return { ...s, weeklyLog: nextLogs };
+
+      let nextUsers = { ...s.users };
+      let nextGymLogs = s.gymLogs;
+
+      if (entry.event === 'gym') {
+        nextUsers[u] = {
+          ...user,
+          gymWallet: (user.gymWallet || 0) - entry.delta
+        };
+        nextGymLogs = s.gymLogs.filter(
+          (log) => !(log.user === u && log.date === entry.date)
+        );
+      } else {
+        nextUsers[u] = {
+          ...user,
+          balance: (user.balance || 0) - entry.delta
+        };
       }
-      return { ...s, weeklyLog: nextLogs, users: nextUsers };
+
+      return { ...s, weeklyLog: nextLogs, users: nextUsers, gymLogs: nextGymLogs };
     });
     showToast("Транзакция удалена", "info");
   };
@@ -303,18 +218,16 @@ export default function App() {
     if (!isAdmin) return;
     
     persist(s => {
-      const nextUsers = { ...s.users };
       const nextWeeklyLog = [...s.weeklyLog];
+      let nextUsers = { ...s.users };
       let nextJobs = [...s.jobs];
-      const nextKitchenTasks = { ...s.kitchenTasks };
-      const nextCleaningTasks = { ...s.cleaningTasks };
-      const nextWastes = { ...s.wastes };
+      let nextKitchenTasks = { ...s.kitchenTasks };
+      let nextCleaningTasks = { ...s.cleaningTasks };
+      let nextWastes = { ...s.wastes };
       let nextKitchenDone = s.kitchenDone;
       const nextCleaningDone = { ...s.cleaningDone };
       const nextWasteDone = { ...s.wasteDone };
-
-      // 1. Find and remove the late penalty log entry & revert balance
-      // We look for recent penalty (today or very recent)
+      
       let logIdx = -1;
       for (let i = nextWeeklyLog.length - 1; i >= 0; i--) {
         if (nextWeeklyLog[i].user === userKey && nextWeeklyLog[i].event === 'kitchen_late') {
@@ -325,7 +238,10 @@ export default function App() {
       
       if (logIdx !== -1) {
         const log = nextWeeklyLog[logIdx];
-        nextUsers[userKey].balance -= log.delta; // Revert fine
+        nextUsers[userKey] = {
+          ...nextUsers[userKey],
+          balance: nextUsers[userKey].balance - log.delta
+        };
         nextWeeklyLog.splice(logIdx, 1);
       }
 
@@ -339,18 +255,24 @@ export default function App() {
       // 3. Mark as done and clear technical flags
       if (type === 'kitchen') {
         nextKitchenDone = true;
-        delete nextKitchenTasks['escalated_2130'];
-        delete nextKitchenTasks['escalated_0800'];
-        delete nextKitchenTasks['overdue_migrated'];
+        const kt = { ...s.kitchenTasks };
+        delete kt['escalated_2130'];
+        delete kt['escalated_0800'];
+        delete kt['overdue_migrated'];
+        nextKitchenTasks = kt;
       } else if (type === 'cleaning') {
         nextCleaningDone[userKey] = true;
         if (nextCleaningTasks[userKey]) {
-          delete nextCleaningTasks[userKey]['overdue_migrated'];
+          const ct = { ...nextCleaningTasks[userKey] };
+          delete ct['overdue_migrated'];
+          nextCleaningTasks = { ...nextCleaningTasks, [userKey]: ct };
         }
       } else if (type === 'waste') {
         nextWasteDone[userKey] = true;
         if (nextWastes[userKey]) {
-            delete nextWastes[userKey]['overdue_migrated'];
+            const wt = { ...nextWastes[userKey] };
+            delete wt['overdue_migrated'];
+            nextWastes = { ...nextWastes, [userKey]: wt };
         }
       }
 
@@ -389,6 +311,8 @@ export default function App() {
       );
       
       if (alreadyRequested) return s;
+
+      sendTelegramMessage(`<b>🆘 Запрос на отмену штрафа!</b>\nОт: ${name}\nКатегория: ${typeLabel}\nАдмин, проверь обоснованность!`);
 
       return {
         ...s,
@@ -435,13 +359,53 @@ export default function App() {
   const [spendForm, setSpendForm] = useState({ user: "toma" as "toma" | "valya", amount: "", category: "Вкусняшки" });
   const [payoutConfirm, setPayoutConfirm] = useState(false);
   const [manualAdjustments, setManualAdjustments] = useState<Record<string, string>>({ toma: "1.0", valya: "1.0" });
-  const [gymModal, setGymModal] = useState(false);
+  const [adjustModal, setAdjustModal] = useState<{ user: 'toma' | 'valya', type: 'balance' | 'gymWallet' | 'expenses' | 'fines', title: string } | null>(null);
   const [delegateModal, setDelegateModal] = useState<{ type: 'waste' | 'cleaning' | 'kitchen', user: 'toma' | 'valya', title: string } | null>(null);
+  const [adjustForm, setAdjustForm] = useState({ amount: "", desc: "" });
+
+  const doAdjustment = () => {
+    if (!adjustModal || !adjustForm.amount) return;
+    const amount = parseFloat(adjustForm.amount);
+    if (isNaN(amount)) return;
+
+    persist(s => {
+      let delta = amount;
+      if (adjustModal.type === 'expenses' || adjustModal.type === 'fines') {
+        delta = -Math.abs(amount);
+      }
+
+      const nextUsers = { ...s.users };
+      const targetUser = s.users[adjustModal.user];
+      
+      if (adjustModal.type === 'balance') {
+        nextUsers[adjustModal.user] = { ...targetUser, balance: targetUser.balance + delta };
+      } else if (adjustModal.type === 'gymWallet') {
+        nextUsers[adjustModal.user] = { ...targetUser, gymWallet: targetUser.gymWallet + delta };
+      } else if (adjustModal.type === 'expenses') {
+        nextUsers[adjustModal.user] = { ...targetUser, balance: targetUser.balance + delta };
+      } else if (adjustModal.type === 'fines') {
+        nextUsers[adjustModal.user] = { ...targetUser, balance: targetUser.balance + delta };
+      }
+
+      const nextWeeklyLog = [...s.weeklyLog, {
+        date: todayISO(),
+        user: adjustModal.user,
+        event: adjustModal.type === 'expenses' ? 'expense' : adjustModal.type === 'fines' ? 'bug_fine' : 'base',
+        delta: delta,
+        note: `Ручная корректировка: ${adjustForm.desc || adjustModal.title}`
+      }];
+
+      return { ...s, users: nextUsers, weeklyLog: nextWeeklyLog };
+    });
+    setAdjustModal(null);
+    setAdjustForm({ amount: "", desc: "" });
+    showToast("Баланс скорректирован", "success");
+  };
   const [delegatePrice, setDelegatePrice] = useState("1");
   const [delegateTitle, setDelegateTitle] = useState("");
   const [delegateTime, setDelegateTime] = useState("18:00");
   const [viewPhoto, setViewPhoto] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ msg: string; type: "info" | "success" | "warn" | "error" } | null>(null);
+
   const [tick, setTick] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>("default");
@@ -561,7 +525,7 @@ export default function App() {
 
   // --- Deadline Reminders ---
   useEffect(() => {
-    if (!hasSynced || !activeUser || notificationPermission !== "granted") return;
+    if (!hasSynced || !activeUser) return;
 
     try {
         const now = Date.now();
@@ -575,11 +539,14 @@ export default function App() {
                 const tag = `deadline-bug-${bug.id}`;
 
                 if (timeUntil > 0 && timeUntil <= thirtyMins && !notifiedDeadlines.current.has(tag)) {
-                    new Notification("⏰ Время истекает!", {
-                        body: `Осталось 30 минут, чтобы исправить баг: ${bug.desc}`,
-                        icon: "/logo.png",
-                        tag
-                    });
+                    if (notificationPermission === "granted") {
+                        new Notification("⏰ Время истекает!", {
+                            body: `Осталось 30 минут, чтобы исправить баг: ${bug.desc}`,
+                            icon: "/logo.png",
+                            tag
+                        });
+                    }
+                    sendTelegramMessage(`<b>⏰ Дедлайн!</b>\nОсталось 30 минут для задачи/бага:\n${bug.desc}`);
                     notifiedDeadlines.current.add(tag);
                 }
             }
@@ -593,11 +560,14 @@ export default function App() {
                 const tag = `deadline-job-${job.id}`;
 
                 if (timeUntil > 0 && timeUntil <= thirtyMins && !notifiedDeadlines.current.has(tag)) {
-                    new Notification("⏳ Дедлайн на Бирже!", {
-                        body: `Осталось 30 минут для задачи: ${job.title}`,
-                        icon: "/logo.png",
-                        tag
-                    });
+                    if (notificationPermission === "granted") {
+                        new Notification("⏳ Дедлайн на Бирже!", {
+                            body: `Осталось 30 минут для задачи: ${job.title}`,
+                            icon: "/logo.png",
+                            tag
+                        });
+                    }
+                    sendTelegramMessage(`<b>⏳ Дедлайн на Бирже!</b>\nОсталось 30 минут:\n${job.title}`);
                     notifiedDeadlines.current.add(tag);
                 }
             }
@@ -607,58 +577,7 @@ export default function App() {
     }
   }, [tick, state.bugs, state.jobs, activeUser, hasSynced, notificationPermission]);
 
-  const persist = useCallback((updater: AppState | ((prev: AppState) => AppState), forceServerUpdate = true) => {
-    if (forceServerUpdate && !hasSynced) {
-        console.warn("Persist ignored: cloud sync not ready.");
-        return;
-    }
-    setState((prev) => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
-      if (forceServerUpdate) {
-        // Size warning (Firestore doc limit is ~1MB)
-        const sizeEstimation = JSON.stringify(next).length;
-        if (sizeEstimation > 800000) { 
-           showToast("⚠️ Память облака заполнена на 80%. Рекомендуется выполнить очистку медиа в настройках.", "warn");
-        }
-
-        setDoc(doc(db, "state", "current"), next).catch(err => {
-            const msg = handleFirestoreError(err, 'write', 'state/current');
-            showToast(msg, "error");
-        });
-      }
-      return next;
-    });
-  }, [hasSynced]);
-
-  useEffect(() => {
-    console.log(`HomeOS v${APP_VERSION} initialized. Syncing Firestore...`);
-    setIsSyncing(true);
-    const unsubscribe = onSnapshot(doc(db, "state", "current"), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data() as AppState;
-        setState(data);
-        console.log("State synced from cloud");
-      } else {
-        console.warn("No cloud state found. Initializing new shared database...");
-        const initial = defaultState();
-        persist(initial);
-      }
-      setHasSynced(true);
-      setIsSyncing(false);
-    }, (err) => {
-        showToast("Ошибка соединения с облаком", "error");
-        console.error(handleFirestoreError(err, 'get', 'state/current'));
-    });
-
-    return () => unsubscribe();
-  }, [persist]);
-
-  const showToast = (msg: string, type: "info" | "success" | "warn" | "error" = "info") => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
-  };
-
-  useEffect(() => {
+   useEffect(() => {
     if (!hasSynced) return;
     // Migrate old names to new ones if they exist in state
     if (state.users.toma && state.users.toma.name === "Тома") {
@@ -813,6 +732,7 @@ export default function App() {
           }]
         }));
         showToast(`⚠️ Дедлайн 21:30 пропущен. Штраф -2.0 € для ${state.users[dutyUser].name}`, "error");
+        sendTelegramMessage(`<b>⚠️ Дедлайн 21:30 пропущен!</b>\nПользователь: ${state.users[dutyUser].name}\nШтраф: -2.00€\nЗадача выставлена на Биржу.`);
       }
 
       // 08:00 Penalty
@@ -825,6 +745,7 @@ export default function App() {
           kitchenDone: true 
         }));
         showToast("⚠️ Кухня не убрана к утру. Штраф -2.0 €. Админ убирает.", "error");
+        sendTelegramMessage(`<b>🔴 Кухня НЕ убрана к утру!</b>\nПользователь: ${state.users[dutyUser].name}\nШтраф: -2.00€\nРабота закрыта автоматически (убирает Админ).`);
       }
     }
 
@@ -859,8 +780,10 @@ export default function App() {
             nextBugs = nextBugs.map(b => b.id === bug.id ? { ...b, status: 'expired', fined: true } : b);
             const fine = bug.fine || 1.0;                
             
-            nextUsers[bug.target] = { ...nextUsers[bug.target], balance: nextUsers[bug.target].balance - fine };
+            const targetUser = nextUsers[bug.target];
+            nextUsers[bug.target] = { ...targetUser, balance: targetUser.balance - fine };
             nextWeeklyLog.push({ date: todayISO(), user: bug.target, event: 'bug_fine', delta: -fine, note: `Просрочен баг: ${bug.desc.slice(0,10)}...` });
+            sendTelegramMessage(`<b>🐞 Баг просрочен!</b>\nПользователь: ${s.users[bug.target as 'toma'|'valya'].name}\nШтраф: -${fine.toFixed(2)}€\nОписание: ${bug.desc}`);
           }
         });
 
@@ -868,14 +791,17 @@ export default function App() {
           nextJobs = nextJobs.map(j => j.id === job.id ? { ...j, status: 'expired', assignee: null } : j);
         });
 
+        const nextKitchenTasks = { ...s.kitchenTasks };
         // Housekeeping Overdue Migrations
         if (kitchenOverdue && !s.kitchenTasks["overdue_migrated"]) {
             const dutyUser = s.kitchenDuty;
             const kitchenTaskNames = Object.keys(s.kitchenTasks || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k));
             
             if (kitchenTaskNames.length > 0) {
-                nextUsers[dutyUser] = { ...nextUsers[dutyUser], balance: nextUsers[dutyUser].balance - 2.0 };
+                const targetUser = nextUsers[dutyUser];
+                nextUsers[dutyUser] = { ...targetUser, balance: targetUser.balance - 2.0 };
                 nextWeeklyLog.push({ date: todayISO(), user: dutyUser, event: 'kitchen_late', delta: -2.0, note: "Просрочка кухни (миграция)" });
+                sendTelegramMessage(`<b>🔥 Просрочка кухни!</b>\nПользователь: ${s.users[dutyUser].name}\nШтраф: -2.00€\nХвосты перенесены на Биржу.`);
                 
                 // Move to market
                 nextJobs.push({
@@ -891,23 +817,27 @@ export default function App() {
             }
 
             nextKitchenDone = true; 
-            s.kitchenTasks["overdue_migrated"] = true; // Local flag for this check
+            nextKitchenTasks["overdue_migrated"] = true;
         }
         
+        let nextCleaningTasks = { ...s.cleaningTasks };
         if (cleaningOverdue) {
             Object.keys(s.cleaningDone).forEach(u => {
-                if (!s.cleaningDone[u] && !s.cleaningTasks[u]?.["overdue_migrated"]) {
-                    const cleaningTaskNames = Object.keys(s.cleaningTasks[u] || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k));
+                const userU = u as 'toma' | 'valya';
+                if (!s.cleaningDone[userU] && !s.cleaningTasks[userU]?.["overdue_migrated"]) {
+                    const cleaningTaskNames = Object.keys(s.cleaningTasks[userU] || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k));
                     
                     if (cleaningTaskNames.length > 0) {
-                        nextUsers[u] = { ...nextUsers[u], balance: nextUsers[u].balance - 2.0 };
-                        nextWeeklyLog.push({ date: todayISO(), user: u, event: 'kitchen_late', delta: -2.0, note: "Просрочка уборки" });
+                        const targetUser = nextUsers[userU];
+                        nextUsers[userU] = { ...targetUser, balance: targetUser.balance - 2.0 };
+                        nextWeeklyLog.push({ date: todayISO(), user: userU, event: 'kitchen_late', delta: -2.0, note: "Просрочка уборки" });
+                        sendTelegramMessage(`<b>🧹 Просрочка уборки!</b>\nПользователь: ${s.users[userU].name}\nШтраф: -2.00€\nЗадача на Бирже.`);
                         
                          // Move to market
                         nextJobs.push({
                             id: Date.now() + 2,
                             creator: 'admin',
-                            title: "УБОРКА: Хвосты от " + s.users[u].name,
+                            title: "УБОРКА: Хвосты от " + s.users[userU].name,
                             reward: 2,
                             deadline: new Date(Date.now() + 4 * 3600000).toISOString(),
                             status: 'open',
@@ -916,14 +846,13 @@ export default function App() {
                         });
                     }
 
-                    nextCleaningDone[u] = true;
-                    if (!s.cleaningTasks[u]) s.cleaningTasks[u] = {};
-                    s.cleaningTasks[u]["overdue_migrated"] = true;
+                    nextCleaningDone[userU] = true;
+                    nextCleaningTasks[userU] = { ...nextCleaningTasks[userU], "overdue_migrated": true };
                 }
             });
         }
 
-        return { ...s, bugs: nextBugs, jobs: nextJobs, users: nextUsers, weeklyLog: nextWeeklyLog, lastBugTarget: nextLastTarget, kitchenDone: nextKitchenDone, cleaningDone: nextCleaningDone };
+        return { ...s, bugs: nextBugs, jobs: nextJobs, users: nextUsers, weeklyLog: nextWeeklyLog, lastBugTarget: nextLastTarget, kitchenDone: nextKitchenDone, cleaningDone: nextCleaningDone, kitchenTasks: nextKitchenTasks, cleaningTasks: nextCleaningTasks };
       });
       if (toExpire.length > 0) showToast(`Баг просрочен. Штраф ${state.bugs.find(b => toExpire.map(ex => ex.id).includes(b.id))?.fine || 1.0} €`, "error");
       if (kitchenOverdue || cleaningOverdue) showToast("Просрочка по дежурству. Штраф 2.0 €", "error");
@@ -959,14 +888,17 @@ export default function App() {
         weeklyLog: [...s.weeklyLog, { date: todayISO(), user: u, event: "kitchen_late", delta: -2.0 }],
       }));
       showToast("⚠️ Дедлайн пропущен. Штраф -2.0 €", "error");
+      sendTelegramMessage(`<b>🔴 Кухня убрана с опозданием!</b>\nПользователь: ${userObj.name}\nШтраф: -2.00€`);
     } else {
       persist((s) => ({ ...s, kitchenDone: true }));
       showToast(randomMsg, "success");
+      sendTelegramMessage(`<b>✨ Кухня убрана вовремя!</b>\nПользователь: ${userObj.name}\nПорядок наведен. Будь как ${userObj.name}! 🚀`);
     }
     if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
   };
 
   const logGym = (userKey: "toma" | "valya") => {
+    console.log("logGym called for:", userKey);
     const alreadyToday = state.gymLogs.find((g) => g.user === userKey && g.date === todayISO());
     if (alreadyToday) { showToast("Уже засчитана тренировка сегодня", "warn"); return; }
     persist((s) => ({
@@ -986,13 +918,19 @@ export default function App() {
     if (isAdmin) {
       showToast("+4 € в gym wallet!", "success");
     } else {
-      setGymModal(true);
       if (navigator.vibrate) navigator.vibrate([50, 100, 50]);
+      sendTelegramMessage(`<b>🏋️ Запрос на подтверждение зала!</b>\n${state.users[userKey].name} утверждает, что потренировался(-ась).`);
     }
   };
 
   const confirmGym = (logIdx: number) => {
+    console.log("confirmGym called for log index:", logIdx);
     const log = state.gymLogs[logIdx];
+    if (log.confirmed) {
+      console.log("Log at index", logIdx, "is already confirmed. Skipping.");
+      return;
+    }
+    console.log("Confirming log:", log);
     persist((s) => ({
       ...s,
       gymLogs: s.gymLogs.map((g, i) => (i === logIdx ? { ...g, confirmed: true } : g)),
@@ -1077,6 +1015,7 @@ export default function App() {
     setBugModal(false);
     setBugForm({ target: "none", desc: "", photo: "", hours: "24", minutes: "0" });
     showToast(bug.target ? `🐛 Баг создан для ${state.users[bug.target].name}` : `🐛 Баг создан. Ожидание ответственного...`, "info");
+    sendTelegramMessage(`<b>🐛 Новый инцидент!</b>\nОтветственный: ${bug.target ? state.users[bug.target].name : 'Кто успеет'}\nОписание: ${bug.desc}`);
   };
 
   const claimBug = (bugId: number) => {
@@ -1146,6 +1085,14 @@ export default function App() {
     const pts = parseFloat(jobForm.reward);
     if (isNaN(pts) || pts <= 0) return showToast("Сумма некорректна", "error");
 
+    // Balance check for children
+    if (activeUser === 'toma' || activeUser === 'valya') {
+      const userBalance = state.users[activeUser].balance;
+      if (pts > userBalance) {
+        return showToast(`Недостаточно средств. Ваш баланс: ${userBalance.toFixed(2)}€`, "error");
+      }
+    }
+
     const dl = new Date();
     const [h, m] = jobForm.time.split(":").map(x => parseInt(x));
     dl.setHours(h, m, 0, 0);
@@ -1169,6 +1116,7 @@ export default function App() {
     setJobModal(false);
     setJobForm({ title: "", reward: "5", photo: "", time: "18:00" });
     showToast("📋 Работа выставлена на биржу", "success");
+    sendTelegramMessage(`<b>💰 Новая задача на Бирже!</b>\nОт: ${state.users[activeUser as 'toma'|'valya']?.name || 'Админ'}\n${j.title}\nНаграда: ${j.reward.toFixed(2)}€`);
   };
 
   const takeJob = (jobId: number) => {
@@ -1190,11 +1138,15 @@ export default function App() {
 
   const submitJob = (jobId: number) => {
     // Photos are now optional per user request
+    const job = state.jobs.find(j => j.id === jobId);
     persist((s) => ({
       ...s,
       jobs: s.jobs.map(j => j.id === jobId ? { ...j, status: "review" } : j)
     }));
     showToast("Работа отправлена на проверку", "success");
+    if (job) {
+      sendTelegramMessage(`<b>✅ Работа на проверку!</b>\nОт: ${state.users[activeUser as 'toma'|'valya']?.name}\nЗадача: ${job.title}`);
+    }
   };
 
   const postToMarket = () => {
@@ -1230,6 +1182,7 @@ export default function App() {
     setDelegateTitle("");
     setDelegatePrice("1");
     showToast("✅ Задача делегирована на Биржу", "success");
+    sendTelegramMessage(`<b>🤝 Передано на Биржу!</b>\nОт: ${state.users[activeUser as 'toma'|'valya'].name}\nУслуга: ${job.title}\nНаграда: ${reward.toFixed(2)}€`);
   };
 
   const acceptJob = (jobId: number) => {
@@ -1270,6 +1223,10 @@ export default function App() {
       return { ...s, users: nextUsers, weeklyLog: nextLog, jobs: nextJobs, wastes: nextWastes, cleaningTasks: nextCleaning };
     });
     showToast("✅ Работа принята и оплачена", "success");
+    const job = state.jobs.find(j => j.id === jobId);
+    if (job && job.assignee) {
+      sendTelegramMessage(`<b>⭐️ Работа принята!</b>\nИсполнитель: ${state.users[job.assignee].name}\nЗадача: ${job.title}\nНачислено: +${job.reward.toFixed(2)}€`);
+    }
   };
 
   const rejectJob = (jobId: number) => {
@@ -1278,6 +1235,10 @@ export default function App() {
       jobs: s.jobs.map((j) => (j.id === jobId ? { ...j, status: "in_progress", resolutionPhoto: undefined } : j)),
     }));
     showToast("❌ Отправлено на доработку", "warn");
+    const job = state.jobs.find(j => j.id === jobId);
+    if (job && job.assignee) {
+      sendTelegramMessage(`<b>❌ Работа возвращена на доработку</b>\nДля: ${state.users[job.assignee].name}\nЗадача: ${job.title}`);
+    }
   };
 
   const deleteJob = (jobId: number) => {
@@ -1320,6 +1281,7 @@ export default function App() {
     }));
     setPayoutConfirm(false);
     showToast(`💸 ВЫПЛАТА ВЫПОЛНЕНА. НАЧИНАЕМ С ЧИСТОГО ЛИСТА!`, "success");
+    sendTelegramMessage(`<b>💰 ВЫПЛАТА НЕДЕЛИ!</b>\n${state.users.toma.name}: ${tomaTotal.toFixed(2)}€\n${state.users.valya.name}: ${valyaTotal.toFixed(2)}€\n\n${winner ? `🏆 Победитель недели: ${winner.name} ${winner.emoji}` : '🤝 Ничья!'}\n\nБалансы обнулены до 10€. Погнали дальше! 🚀`);
   };
 
   const openBugs = state.bugs.filter((b) => b.status === "open");
@@ -1329,340 +1291,6 @@ export default function App() {
   const wasteDuty = state.kitchenDuty;
   const wasteSecond = wasteDuty === "toma" ? "valya" : "toma";
  
-  // ──────────────────────────────────────────────────────────────────────────
-  function Dashboard() {
-    const [now, setNow] = useState(new Date());
-    useEffect(() => { const timer = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(timer); }, []);
-
-    const focusUser = activeUser && activeUser !== "admin" ? activeUser : null;
-    
-    const getGreeting = () => {
-        const day = now.getDay();
-        const dateStr = now.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
-        const weekDayStr = now.toLocaleDateString("ru-RU", { weekday: "long" });
-        
-        const base = {
-            date: dateStr,
-            weekday: weekDayStr.charAt(0).toUpperCase() + weekDayStr.slice(1)
-        };
-
-        if (day === 5) {
-            return {
-                ...base,
-                title: "🔥 ПЯТНИЧНЫЙ МАРАФОН",
-                text: "А значит сегодня — Великая Пятница! 🧹🗑️ День большой уборки и мусора. Соберите все силы, впереди крутые выходные! 🚀",
-                color: "#4F46E5",
-                bg: "#EEF2FF",
-                icon: "⚡"
-            };
-        }
-        if (day === 2) {
-            return {
-                ...base,
-                title: "🚮 ДЕНЬ МУСОРА",
-                text: "Не забудьте выставить баки до 18:00, чтобы не получить штраф! Порядок начинается с малого. 🍏📦",
-                color: "#10B981",
-                bg: "#ECFDF5",
-                icon: "♻️"
-            };
-        }
-        if (day === 0 || day === 6) {
-            return {
-                ...base,
-                title: "🌈 ВРЕМЯ ОТДЫХА",
-                text: "Ура, выходные! Время восстановить силы, играть и наслаждаться жизнью. Вы молодцы! 🍕🎮🍿",
-                color: "#8B5CF6",
-                bg: "#F5F3FF",
-                icon: "🎉"
-            };
-        }
-        return {
-            ...base,
-            title: "✨ НОВЫЙ ДЕНЬ",
-            text: "Отличный момент, чтобы сделать что-то полезное и просто порадоваться дню. Погнали! 🤘💎",
-            color: "#64748B",
-            bg: "#F8FAFC",
-            icon: "☀️"
-        };
-    };
-
-    const greeting = getGreeting();
-
-    const taskState = state.kitchenTasks || { "Посудомойка": false, "Столы": false, "Плита": false };
-    const tasks = Object.keys(taskState).sort((a, b) => (taskState[a] ? 1 : 0) - (taskState[b] ? 1 : 0));
-    const allTasksDone = tasks.length > 0 && tasks.every(t => taskState[t]);
-
-    return (
-      <div className="animate-in slide-in-from-bottom-3 duration-300" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-        
-        {/* NOTIFICATION SETUP BANNER (Prominent for kids) */}
-        {notificationPermission !== "granted" && notificationPermission !== "denied" && (
-            <motion.div 
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                style={{ 
-                    background: "linear-gradient(135deg, #6366F1 0%, #4F46E5 100%)",
-                    color: "white",
-                    padding: "20px",
-                    borderRadius: 24,
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 12,
-                    boxShadow: "0 10px 25px -5px rgba(79, 70, 229, 0.4)",
-                    position: "relative",
-                    overflow: "hidden"
-                }}
-            >
-                <div style={{ position: "absolute", top: -20, right: -20, fontSize: 80, opacity: 0.1 }}>🔔</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div style={{ background: "rgba(255,255,255,0.2)", width: 40, height: 40, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <Bell size={24} />
-                    </div>
-                    <div>
-                        <h4 style={{ fontWeight: 800, fontSize: 16 }}>Включи уведомления!</h4>
-                        <p style={{ fontSize: 12, opacity: 0.9, fontWeight: 500 }}>Чтобы сразу узнавать о новых багах и деньгах</p>
-                    </div>
-                </div>
-                <button 
-                  onClick={requestPermission}
-                  style={{ 
-                    background: "white", 
-                    color: "#4F46E5", 
-                    border: "none", 
-                    padding: "12px", 
-                    borderRadius: 14, 
-                    fontWeight: 800, 
-                    fontSize: 13,
-                    cursor: "pointer",
-                    boxShadow: "0 4px 12px rgba(0,0,0,0.1)"
-                  }}
-                >
-                  РАЗРЕШИТЬ ОПОВЕЩЕНИЯ
-                </button>
-            </motion.div>
-        )}
-
-        {isAdmin && pendingGym.length > 0 && (
-          <div className="animate-in fade-in slide-in-from-top-2 duration-500" style={{ 
-            background: "#FFFBEB", 
-            padding: "16px 20px", 
-            borderRadius: 20, 
-            border: "2px solid #F59E0B",
-            display: "flex",
-            alignItems: "center",
-            gap: 16,
-            marginBottom: 8,
-            boxShadow: "0 4px 12px rgba(245, 158, 11, 0.15)"
-          }}>
-            <div style={{ fontSize: 24 }}>🏋️</div>
-            <div style={{ flex: 1 }}>
-              <p style={{ fontSize: 14, fontWeight: 700, color: "#92400E", marginBottom: 2 }}>ОЖИДАЮТ ПОДТВЕРЖДЕНИЯ</p>
-              <p style={{ fontSize: 13, color: "#B45309", fontWeight: 500 }}>
-                {pendingGym.length === 1 ? "Один запрос на выплату за тренировку" : `${pendingGym.length} запроса на выплату за тренировки`}
-              </p>
-            </div>
-            <button 
-              onClick={() => {
-                // Scroll to the gym logs section or just leave it
-                const el = document.getElementById('pending-gym-section');
-                if (el) el.scrollIntoView({ behavior: 'smooth' });
-              }}
-              style={{ fontSize: 12, fontWeight: 700, color: "#D97706", textDecoration: "underline", background: "none", border: "none", cursor: "pointer" }}
-            >
-              Смотреть
-            </button>
-          </div>
-        )}
-
-        <div style={{ 
-            background: greeting.bg, 
-            padding: "24px", 
-            borderRadius: 24, 
-            border: `1px solid ${greeting.color}30`,
-            position: "relative",
-            overflow: "hidden",
-            boxShadow: `0 10px 30px ${greeting.color}10`
-        }}>
-          <div style={{ position: "absolute", right: -10, top: -10, fontSize: 120, opacity: 0.1, transform: "rotate(15deg)", pointerEvents: "none" }}>
-            {greeting.icon}
-          </div>
-          <div style={{ position: "relative", zIndex: 1 }}>
-            <p style={{ fontSize: 11, fontWeight: 800, color: greeting.color, letterSpacing: 1.5, marginBottom: 8 }}>{greeting.title}</p>
-            <h2 style={{ fontSize: 24, color: "#0F172A", fontWeight: 800, marginBottom: 8, letterSpacing: "-0.5px" }}>
-              Сегодня <span style={{ color: greeting.color }}>{greeting.date}</span>, 
-              <br/>
-              <span style={{ color: greeting.color, textTransform: "lowercase", background: `${greeting.color}15`, padding: "2px 8px", borderRadius: 8 }}>{greeting.weekday}</span>! {greeting.icon}
-            </h2>
-            <p style={{ fontSize: 15, color: "#475569", fontWeight: 500, lineHeight: 1.5, maxWidth: "85%" }}>{greeting.text}</p>
-          </div>
-        </div>
-        
-        {/* GENERAL MESSAGE */}
-        {state.generalMessage && (
-            <div className="animate-in fade-in zoom-in duration-300" style={{ 
-                background: "#FEF2F2", 
-                border: "2px solid #FCA5A5", 
-                padding: "20px", 
-                borderRadius: 20,
-                display: "flex",
-                flexDirection: "column",
-                gap: 8,
-                boxShadow: "0 4px 6px -1px rgba(239, 68, 68, 0.1)"
-            }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#991B1B", fontWeight: 800, fontSize: 16 }}>
-                    <span>📢 Важное сообщение</span>
-                </div>
-                <p style={{ color: "#7F1D1D", fontSize: 15, fontWeight: 500, margin: 0, whiteSpace: "pre-wrap" }}>
-                    {state.generalMessage}
-                </p>
-                <button 
-                  onClick={() => persist(s => ({ ...s, generalMessage: null }))}
-                  style={{ alignSelf: "flex-end", background: "#FCA5A5", color: "#7F1D1D", border: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, marginTop: 4, cursor: "pointer" }}
-                >
-                    Прочитано
-                </button>
-            </div>
-        )}
-
-        {!isAdmin && activeUser && (
-          <div style={styles.section}>
-            <h3 style={styles.sectionTitle}>QUICK ACTIONS</h3>
-            <div style={styles.quickActions}>
-              <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#4F46E5", color: "#FFFFFF", borderColor: "#4338CA" }} onClick={() => logGym(activeUser as "toma" | "valya")}>
-                🏋️ Я в зале (+4 €)
-              </button>
-              <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#F0FDF4", color: "#166534", borderColor: "#BBF7D0" }} onClick={() => setJobModal(true)}>
-                💼 Дать работу
-              </button>
-              <button style={{ ...styles.quickBtn, flex: 1, padding: 16, background: "#E0E7FF", color: "#4338CA", borderColor: "#C7D2FE" }} onClick={() => setRequestTaskModal(true)}>
-                📝 Поручить маме
-              </button>
-            </div>
-          </div>
-        )}
-
-        {isAdmin && (
-          <div style={styles.section}>
-            <h3 style={styles.sectionTitle}>ADMIN ACTIONS</h3>
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-              <button style={{ ...styles.quickBtn, flex: 1, minWidth: 120, background: "#FFF1F2", color: "#E11D48", borderColor: "#FECDD3" }} onClick={() => setBugModal(true)}>
-                🐛 Создать баг
-              </button>
-              <button style={{ ...styles.quickBtn, flex: 1, minWidth: 120, background: "#F0FDF4", color: "#166534", borderColor: "#BBF7D0" }} onClick={() => setJobModal(true)}>
-                💼 Дать работу
-              </button>
-              <button style={{ ...styles.quickBtn, flex: 1, minWidth: 120, background: "#FEF3C7", color: "#B45309", borderColor: "#FDE68A" }} onClick={() => setSpendModal(true)}>
-                🍬 Расходы
-              </button>
-              <button style={{ ...styles.quickBtn, flex: 1, minWidth: 120, background: "#F0F9FF", color: "#0284C7", borderColor: "#BAE6FD" }} onClick={() => setPayoutConfirm(true)}>
-                💰 Выплата
-              </button>
-            </div>
-          </div>
-        )}
-
-        <div style={{ ...styles.balanceGrid, gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(240px, 1fr))" }}>
-          {["toma", "valya"].sort((a, b) => (activeUser === a ? -1 : activeUser === b ? 1 : 0)).map((u) => {
-            const usr = state.users[u];
-            const isMine = activeUser === u;
-            const isKitchenDuty = state.kitchenDuty === u;
-            
-            const uLogs = state.weeklyLog.filter(l => l.user === u);
-            const expenses = Math.abs(uLogs.filter(l => l.event === "expense").reduce((acc, l) => acc + l.delta, 0));
-            const fines = Math.abs(uLogs.filter(l => l.event === "kitchen_late" || l.event === "bug_fine").reduce((acc, l) => acc + l.delta, 0));
-
-            return (
-              <div key={u} style={{ ...styles.balanceCard, ...(isMine ? { border: "2px solid #4F46E5" } : {}), paddingBottom: 24, position: "relative" }}>
-                {isKitchenDuty && (
-                  <div style={{ position: "absolute", top: 16, right: 16, fontSize: 96 }}>🍳</div>
-                )}
-                <p style={styles.cardLabel}>{usr.name.toUpperCase()}</p>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginTop: 4, marginBottom: 16 }}>
-                  <h2 style={{ fontSize: isMobile ? 40 : 48, fontWeight: 700, color: "#0F172A", letterSpacing: "-1px", lineHeight: 1 }}>{weeklyExpected(u).toFixed(2)}</h2>
-                  <span style={{ fontSize: isMobile ? 24 : 32, fontWeight: 500, color: "#94A3B8" }}>€</span>
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", minHeight: 24, marginTop: 12 }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: "#F1F5F9", color: "#475569" }}>💰 Всего: {usr.totalEarned.toFixed(2)} €</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: usr.gymWallet > 0 ? "#ECFDF5" : "#F8FAFC", color: usr.gymWallet > 0 ? "#059669" : "#94A3B8", boxShadow: usr.gymWallet > 0 ? "0 1px 2px rgba(5, 150, 105, 0.1)" : "none" }}>🏋️ Зал: +{usr.gymWallet.toFixed(2)} €</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: expenses > 0 ? "#EFF6FF" : "#F8FAFC", color: expenses > 0 ? "#2563EB" : "#94A3B8", boxShadow: expenses > 0 ? "0 1px 2px rgba(37, 99, 235, 0.1)" : "none" }}>🍬 Траты: -{expenses.toFixed(2)} €</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: fines > 0 ? "#FEF2F2" : "#F8FAFC", color: fines > 0 ? "#DC2626" : "#94A3B8", boxShadow: fines > 0 ? "0 1px 2px rgba(220, 38, 38, 0.1)" : "none" }}>⚠️ Штрафы: -{fines.toFixed(2)} €</span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {isAdmin && (
-          <div style={{ ...styles.card, background: "#EFF6FF", border: "1px solid #DBEAFE", textAlign: "center", padding: "16px 20px" }}>
-            <h3 style={{ fontSize: 13, fontWeight: 700, color: "#2563EB", marginBottom: 4 }}>ВСЕГО ВЫПЛАЧЕНО ЗА ВСЕ ВРЕМЯ</h3>
-            <div style={{ fontSize: 24, fontWeight: 800, color: "#1E293B" }}>{(state.totalPaidOut || 0).toFixed(2)} €</div>
-          </div>
-        )}
-
-        {state.weeklyWinner && (
-          <div style={{ ...styles.card, background: "#FFFBEB", border: "2px solid #FCD34D" }}>
-            <h3 style={styles.sectionTitle}>🏆 Доска почета</h3>
-            <p style={{ fontSize: 14, color: "#92400E" }}>Победитель недели: {state.weeklyWinner.name} {state.weeklyWinner.emoji}</p>
-          </div>
-        )}
-
-        {!focusUser && (
-          <div style={styles.card}>
-            <div style={styles.cardHeader}>
-              <h3 style={styles.sectionTitle}>⚔️ Недельный рейтинг</h3>
-            </div>
-            <div style={{ padding: "16px 24px" }}>
-              {["toma", "valya"].sort((a, b) => weeklyExpected(b) - weeklyExpected(a)).map((u, i) => (
-                <div key={u} style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: i === 0 ? 12 : 0 }}>
-                  <span style={{ fontSize: 16 }}>{i === 0 ? "🥇" : "🥈"}</span>
-                  <span style={{ fontSize: 13, fontWeight: 600, width: 60 }}>{state.users[u].emoji} {state.users[u].name}</span>
-                  <div style={{ flex: 1, height: 6, background: "#F1F5F9", borderRadius: 3, overflow: "hidden" }}>
-                    <div style={{ height: "100%", background: i === 0 ? "#4F46E5" : "#CBD5E1", width: `${Math.min(100, (weeklyExpected(u) / 20) * 100)}%` }} />
-                  </div>
-                  <span style={{ fontFamily: "DM Mono", fontSize: 14, fontWeight: 700 }}>{weeklyExpected(u).toFixed(2)} <span style={{ fontSize: 12, color: "#94A3B8" }}>€</span></span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {isAdmin && pendingGym.length > 0 && (
-          <div id="pending-gym-section" style={styles.section}>
-            <h3 style={styles.sectionTitle}>ЗАПРОСЫ НА ВЫПЛАТУ (ЗАЛ)</h3>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {pendingGym.map((log) => {
-                const globalIdx = state.gymLogs.findIndex(g => g === log);
-                return (
-                  <div key={globalIdx} style={{ ...styles.card, padding: 16, borderLeft: "4px solid #F59E0B" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div>
-                        <div style={{ fontWeight: 700, color: "#1E293B" }}>{state.users[log.user].name}</div>
-                        <div style={{ fontSize: 12, color: "#64748B" }}>Тренировка в зале · +4.00 €</div>
-                      </div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <button 
-                          style={{ ...styles.primaryBtn, background: "#EF4444" }} 
-                          onClick={() => rejectGym(globalIdx)}
-                        >
-                          Отклонить
-                        </button>
-                        <button 
-                          style={{ ...styles.primaryBtn, background: "#10B981" }} 
-                          onClick={() => confirmGym(globalIdx)}
-                        >
-                          Одобрить
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
 
   function Tasks() {
     const isDuty = state.kitchenDuty === activeUser;
@@ -2554,136 +2182,6 @@ export default function App() {
     );
   }
 
-  function Ledger() {
-    const [filterUser, setFilterUser] = useState<string>("all");
-    const [deleteConfirmIdx, setConfirmDeleteIdx] = useState<number | null>(null);
-
-    const keyedLogs = state.weeklyLog.map((log, index) => ({ ...log, originalIdx: index }));
-
-    const availableLogs = activeUser && activeUser !== "admin"
-      ? keyedLogs.filter((l) => l.user === activeUser)
-      : keyedLogs;
-
-    const displayedLog = filterUser === "all" 
-      ? availableLogs 
-      : availableLogs.filter((l) => l.user === filterUser);
-
-    const eventLabel: Record<string, string> = {
-      kitchen_late: "Задержка на кухне",
-      gym: "Подтверждение зала",
-      bug_fine: "Штраф за баг",
-      expense: "Вкусняшки/Расходы",
-      base: "Базовая выплата (неделя)",
-      job_reward: "Оплата за работу",
-      job_payment: "Расчет за работу",
-    };
-
-    return (
-      <div className="animate-in slide-in-from-bottom-3 duration-300" style={{ display: "flex", flexDirection: "column", gap: 32 }}>
-        <div style={styles.balanceGrid}>
-          {(activeUser && activeUser !== "admin" ? [activeUser] : ["toma", "valya"]).map((u) => {
-            const uLogs = state.weeklyLog.filter(l => l.user === u);
-            const expenses = Math.abs(uLogs.filter(l => l.event === "expense").reduce((acc, l) => acc + l.delta, 0));
-            const fines = Math.abs(uLogs.filter(l => l.event === "kitchen_late" || l.event === "bug_fine").reduce((acc, l) => acc + l.delta, 0));
-
-            return (
-              <div key={u} style={{ ...styles.balanceCard, padding: 20 }}>
-                <p style={styles.cardLabel}>{state.users[u].name.toUpperCase()}</p>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginTop: 4, marginBottom: 16 }}>
-                  <h2 style={{ fontSize: 32, fontWeight: 700, color: "#0F172A", letterSpacing: "-1px", lineHeight: 1 }}>{weeklyExpected(u).toFixed(2)}</h2>
-                  <span style={{ fontSize: 20, fontWeight: 500, color: "#94A3B8" }}>€</span>
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", minHeight: 20 }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, padding: "2px 10px", borderRadius: 20, background: state.users[u].gymWallet > 0 ? "#ECFDF5" : "#F8FAFC", color: state.users[u].gymWallet > 0 ? "#059669" : "#94A3B8" }}>🏋️ Зал: +{state.users[u].gymWallet.toFixed(2)} €</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, padding: "2px 10px", borderRadius: 20, background: expenses > 0 ? "#EFF6FF" : "#F8FAFC", color: expenses > 0 ? "#2563EB" : "#94A3B8" }}>🍬 Траты: -{expenses.toFixed(2)} €</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, padding: "2px 10px", borderRadius: 20, background: fines > 0 ? "#FEF2F2" : "#F8FAFC", color: fines > 0 ? "#DC2626" : "#94A3B8" }}>⚠️ Штрафы: -{fines.toFixed(2)} €</span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        <div style={styles.card}>
-          <div style={{ ...styles.cardHeader, display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "space-between", alignItems: "center" }}>
-            <h3 style={{ fontSize: 14, fontWeight: 600 }}>Аудит транзакций</h3>
-            {isAdmin && (
-              <div style={styles.segmented}>
-                <button style={{ ...styles.segBtn, ...(filterUser === "all" ? styles.segBtnActive : {}) }} onClick={() => setFilterUser("all")}>Все</button>
-                <button style={{ ...styles.segBtn, ...(filterUser === "toma" ? styles.segBtnActive : {}) }} onClick={() => setFilterUser("toma")}>Томочка</button>
-                <button style={{ ...styles.segBtn, ...(filterUser === "valya" ? styles.segBtnActive : {}) }} onClick={() => setFilterUser("valya")}>Валечка</button>
-              </div>
-            )}
-          </div>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ ...styles.table, minWidth: 500 }}>
-              <thead style={styles.thead}>
-                <tr>
-                  <th style={styles.th}>Объект</th>
-                  <th style={styles.th}>Категория</th>
-                  <th style={{ ...styles.th, textAlign: "right" }}>Изменение</th>
-                  <th style={styles.th}>Период</th>
-                  {isAdmin && <th style={{ ...styles.th, textAlign: "right" }}>Действие</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {[...displayedLog].reverse().map((tx, i) => (
-                  <tr key={i} style={{ ...styles.tr, background: tx.user === 'toma' ? '#F5F3FF' : tx.user === 'valya' ? '#F0FDF4' : 'transparent' }}>
-                    <td style={{ ...styles.td, fontWeight: 600 }}>{state.users[tx.user]?.name}</td>
-                    <td style={styles.td}>
-                      {eventLabel[tx.event] || tx.event}
-                      {tx.note && <div style={{ fontSize: 10, color: "#94A3B8" }}>{tx.note}</div>}
-                    </td>
-                    <td style={{ ...styles.td, textAlign: "right", color: tx.delta >= 0 ? "#10B981" : "#EF4444", fontWeight: 700, fontFamily: "DM Mono", whiteSpace: "nowrap" }}>
-                      {tx.delta >= 0 ? "+" : ""}{tx.delta.toFixed(2)} €
-                    </td>
-                    <td style={{ ...styles.td, whiteSpace: "nowrap" }}>{new Date(tx.date).toLocaleDateString("ru-RU")}</td>
-                    {isAdmin && (
-                      <td style={{ ...styles.td, textAlign: "right", paddingRight: 12 }}>
-                        <button 
-                          style={{ 
-                            background: deleteConfirmIdx === tx.originalIdx ? "#EF4444" : "#FEF2F2", 
-                            border: deleteConfirmIdx === tx.originalIdx ? "1px solid #DC2626" : "1px solid #FEE2E2", 
-                            cursor: "pointer", 
-                            color: deleteConfirmIdx === tx.originalIdx ? "white" : "#EF4444", 
-                            padding: "6px 10px", 
-                            borderRadius: 8,
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 4,
-                            transition: "all 0.2s"
-                          }}
-                          onClick={() => {
-                            if (deleteConfirmIdx === tx.originalIdx) {
-                              deleteLogEntry(tx.originalIdx);
-                              setConfirmDeleteIdx(null);
-                            } else {
-                              setConfirmDeleteIdx(tx.originalIdx);
-                              setTimeout(() => setConfirmDeleteIdx(null), 3000);
-                            }
-                          }}
-                        >
-                          <Trash2 size={14} />
-                          <span style={{ fontSize: 11, fontWeight: 700 }}>
-                            {deleteConfirmIdx === tx.originalIdx ? "Уверены?" : "Удалить"}
-                          </span>
-                        </button>
-                      </td>
-                    )}
-                  </tr>
-                ))}
-                {displayedLog.length === 0 && (
-                  <tr>
-                    <td colSpan={4} style={{ textAlign: "center", padding: 32, color: "#94A3B8", fontSize: 13 }}>Нет транзакций</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   function Market() {
     const [now, setNow] = useState(new Date());
     const [historyOpen, setHistoryOpen] = useState(false);
@@ -3411,14 +2909,62 @@ export default function App() {
   }
 
   const renderContent = () => {
-    if (view === "dashboard") return <Dashboard />;
+    if (view === "dashboard") return <Dashboard 
+        activeUser={activeUser}
+        isAdmin={isAdmin}
+        isMobile={isMobile}
+        state={state}
+        logGym={logGym}
+        notificationPermission={notificationPermission}
+        requestPermission={requestPermission}
+        pendingGym={pendingGym}
+        persist={persist}
+        weeklyExpected={weeklyExpected}
+        setAdjustModal={setAdjustModal}
+        setJobModal={setJobModal}
+        setRequestTaskModal={setRequestTaskModal}
+        setBugModal={setBugModal}
+        setSpendModal={setSpendModal}
+        setPayoutConfirm={setPayoutConfirm}
+        rejectGym={rejectGym}
+        confirmGym={confirmGym}
+        openBugs={openBugs}
+        showToast={showToast}
+    />;
     if (view === "tasks") return <Tasks />;
     if (view === "judge") return <Judge />;
     if (view === "market") return <Market />;
-    if (view === "ledger") return <Ledger />;
+    if (view === "ledger") return <Ledger 
+        activeUser={activeUser}
+        isAdmin={isAdmin}
+        state={state}
+        weeklyExpected={weeklyExpected}
+        deleteLogEntry={deleteLogEntry}
+    />;
     if (view === "settings" && isAdmin) return <SettingsPage />;
     if (view === "guide") return <GuidePage />;
-    return <Dashboard />;
+    return <Dashboard 
+        activeUser={activeUser}
+        isAdmin={isAdmin}
+        isMobile={isMobile}
+        state={state}
+        logGym={logGym}
+        notificationPermission={notificationPermission}
+        requestPermission={requestPermission}
+        pendingGym={pendingGym}
+        persist={persist}
+        weeklyExpected={weeklyExpected}
+        setAdjustModal={setAdjustModal}
+        setJobModal={setJobModal}
+        setRequestTaskModal={setRequestTaskModal}
+        setBugModal={setBugModal}
+        setSpendModal={setSpendModal}
+        setPayoutConfirm={setPayoutConfirm}
+        rejectGym={rejectGym}
+        confirmGym={confirmGym}
+        openBugs={openBugs}
+        showToast={showToast}
+    />;
   };
 
   if (isLoading) {
@@ -3579,60 +3125,17 @@ export default function App() {
       <div style={isMobile ? { display: "flex", flexDirection: "column", flex: 1, minHeight: "100vh" } : styles.desktopWrapper}>
         {/* SIDEBAR (Desktop only) */}
         {!isMobile && (
-          <aside style={styles.sidebar}>
-            <div style={{ ...styles.sidebarHeader, padding: "24px 20px" }}>
-              <img 
-                src="/logo.png" 
-                alt="Logo" 
-                style={{ width: 40, height: 40, objectFit: "contain" }} 
-                referrerPolicy="no-referrer"
-              />
-              <span style={{ ...styles.sidebarLogo, fontSize: 24 }}>HomeOS</span>
-            </div>
-
-            <nav style={styles.sidebarNav}>
-              {[
-                { id: "dashboard", label: "Обзор", count: isAdmin ? pendingGym.length : 0 },
-                { id: "tasks", label: "Задачи", count: state.kitchenDuty === activeUser && !state.kitchenDone ? 1 : 0 },
-                { id: "judge", label: isAdmin ? "Баги" : "Мои баги", count: openBugs.length },
-                { id: "market", label: "Биржа", count: state.jobs.filter(j => (j.status === 'open' || j.status === 'review') && !(j as any).isParentTask).length },
-                { id: "ledger", label: "Ledger" },
-                { id: "guide", label: "Справка" },
-                ...(isAdmin ? [{ id: "settings", label: "Настройки" } as const] : []),
-              ].map((n) => (
-                <button
-                  key={n.id}
-                  style={{ ...styles.sidebarNavBtn, ...(view === n.id ? styles.sidebarNavBtnActive : {}) }}
-                  onClick={() => setView(n.id as any)}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span>{n.label}</span>
-                    {n.count ? <span style={{ fontSize: 10, background: "#EF4444", color: "#fff", padding: "0 6px", borderRadius: 10 }}>{n.count}</span> : null}
-                  </div>
-                </button>
-              ))}
-            </nav>
-
-            <div style={styles.sidebarFooter}>
-              {!isAdmin ? (
-                <div style={styles.userProfile}>
-                  <div style={styles.userAvatar}>{user?.emoji}</div>
-                  <div>
-                    <p style={styles.userName}>{user?.name}</p>
-                    <p style={styles.userRole}>Резидент</p>
-                  </div>
-                </div>
-              ) : (
-                <div style={styles.userProfile}>
-                  <div style={{ ...styles.userAvatar, background: "#4F46E5" }}>👑</div>
-                  <div>
-                    <p style={styles.userName}>Админ</p>
-                    <p style={styles.userRole}>Nexus Control</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </aside>
+          <Sidebar 
+            activeUser={activeUser}
+            view={view}
+            setView={setView}
+            isAdmin={isAdmin}
+            state={state}
+            pendingGym={pendingGym}
+            openBugs={openBugs}
+            user={user}
+            APP_VERSION={APP_VERSION}
+          />
         )}
 
         {/* MAIN CONTENT AREA */}
@@ -3757,28 +3260,6 @@ export default function App() {
       </div>
 
       {/* MODALS */}
-      {gymModal && (
-        <div style={styles.overlay} onClick={() => setGymModal(false)}>
-          <div className="animate-in zoom-in duration-300" style={{ ...styles.modal, textAlign: "center", padding: 40 }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ fontSize: 80, marginBottom: 20 }}>💪✨</div>
-            <h2 style={{ ...styles.modalTitle, fontSize: 24, marginBottom: 12 }}>СПОРТ — ЭТО МОЩЬ!</h2>
-            <p style={{ ...styles.modalSub, fontSize: 18, color: "#1E293B", lineHeight: 1.5, marginBottom: 24 }}>
-                Ты становишься <strong>сильнее</strong>, <strong>красивее</strong> и <strong>богаче</strong> с каждой тренировкой! 🚀
-            </p>
-            <div style={{ background: "#F0FDF4", padding: 16, borderRadius: 12, marginBottom: 24, border: "1px solid #BBF7D0" }}>
-                <span style={{ fontSize: 15, color: "#166534", fontWeight: 700 }}>
-                    Запрос отправлен родителям. Скоро в твоем кошельке станет на 4€ больше! 💸
-                </span>
-            </div>
-            <button 
-                style={{ ...styles.primaryBtn, width: "100%", height: 56, fontSize: 18 }} 
-                onClick={() => setGymModal(false)}
-            >
-                ТАК ДЕРЖАТЬ! ⚡
-            </button>
-          </div>
-        </div>
-      )}
 
       {delegateModal && (
         <div style={styles.overlay} onClick={() => {
@@ -4142,6 +3623,45 @@ export default function App() {
         </div>
       )}
 
+      {adjustModal && (
+        <div style={styles.overlay} onClick={() => setAdjustModal(null)}>
+          <div className="animate-in zoom-in duration-300" style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>⚙️ {adjustModal.title}</h3>
+            <p style={styles.modalSub}>Корректировка баланса для: {state.users[adjustModal.user].name}</p>
+            
+            <div style={styles.formGroup}>
+              <label style={styles.label}>{adjustModal.type === 'balance' || adjustModal.type === 'gymWallet' ? "Сколько начислить/списать?" : "Сумма (евро)"}</label>
+              <input
+                type="number"
+                step="0.01"
+                style={{ ...styles.textarea, height: "auto", padding: "12px 16px" }}
+                placeholder="0.00"
+                value={adjustForm.amount}
+                onChange={(e) => setAdjustForm((f) => ({ ...f, amount: e.target.value }))}
+              />
+            </div>
+
+            <div style={styles.formGroup}>
+              <label style={styles.label}>За что/Комментарий</label>
+              <input
+                type="text"
+                style={{ ...styles.textarea, height: "auto", padding: "12px 16px" }}
+                placeholder="Например: бонус, штраф..."
+                value={adjustForm.desc}
+                onChange={(e) => setAdjustForm((f) => ({ ...f, desc: e.target.value }))}
+              />
+            </div>
+
+            <div style={styles.modalActions}>
+              <button style={{ ...styles.cancelBtn, flex: 1 }} onClick={() => setAdjustModal(null)}>Отмена</button>
+              <button style={{ ...styles.primaryBtn, flex: 2, background: "#6366F1" }} onClick={doAdjustment}>
+                Сохранить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {viewPhoto && (
         <div 
             style={{ ...styles.overlay, background: "rgba(0,0,0,0.9)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }} 
@@ -4170,94 +3690,3 @@ export default function App() {
 }
 
 // ─── STYLES ─────────────────────────────────────────────────────────────────
-const styles = {
-  root: { minHeight: "100vh", background: "#F8FAFC", display: "flex", flexDirection: "column" as "column" },
-  desktopWrapper: { display: "flex", flex: 1, height: "100vh", overflow: "hidden" as "hidden" },
-  sidebar: { width: 260, background: "#0F172A", color: "#FFFFFF", display: "flex", flexDirection: "column" as "column", borderRight: "1px solid #1E293B" },
-  sidebarHeader: { padding: "24px", borderBottom: "1px solid #1E293B", display: "flex", alignItems: "center", gap: 12 },
-  sidebarLogo: { fontWeight: 700, fontSize: 18, color: "rgba(148, 163, 184, 0.4)", letterSpacing: "-0.5px" },
-  sidebarLogoIcon: { width: 32, height: 32, background: "#6366F1", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "bold" },
-  sidebarNav: { flex: 1, padding: "16px", display: "flex", flexDirection: "column" as "column", gap: 8 },
-  sidebarNavBtn: { padding: "10px 16px", borderRadius: 8, border: "none", background: "none", cursor: "pointer", fontSize: 14, fontWeight: 500, color: "#94A3B8", textAlign: "left" as "left", transition: "all 0.2s" },
-  sidebarNavBtnActive: { background: "#4F46E5", color: "#FFFFFF" },
-  sidebarFooter: { padding: "24px", borderTop: "1px solid #1E293B" },
-  userProfile: { display: "flex", alignItems: "center", gap: 12 },
-  userAvatar: { width: 40, height: 40, borderRadius: "50%", background: "#334155", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 },
-  userName: { fontSize: 13, fontWeight: 600, color: "#FFFFFF" },
-  userRole: { fontSize: 10, color: "#64748B", textTransform: "uppercase" as "uppercase" },
-
-  mainWrapper: { flex: 1, display: "flex", flexDirection: "column" as "column", overflow: "hidden" as "hidden" },
-  header: { height: 64, background: "#FFFFFF", borderBottom: "1px solid #E2E8F0", padding: "0 32px", display: "flex", alignItems: "center", justifyContent: "space-between", boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.05)" },
-  headerTitle: { fontSize: 18, fontWeight: 600, color: "#1E293B" },
-  headerRight: { display: "flex", alignItems: "center", gap: 16 },
-  searchBar: { background: "#F1F5F9", border: "none", borderRadius: 20, padding: "6px 16px", fontSize: 14, width: 240, outline: "none" },
-  userBtn: { padding: "6px 12px", background: "#F1F5F9", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600, color: "#475569" },
-  
-  main: { flex: 1, padding: 32, overflowY: "auto" as "auto", display: "flex", flexDirection: "column" as "column", gap: 32 },
-  
-  toast: { position: "fixed" as "fixed", top: 20, left: "50%", transform: "translateX(-50%)", color: "#fff", padding: "10px 20px", borderRadius: 12, fontSize: 14, fontWeight: 600, zIndex: 1000, whiteSpace: "nowrap" as "nowrap", boxShadow: "0 4px 20px rgba(0,0,0,0.15)" },
-  
-  balanceGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16 },
-  balanceCard: { background: "#FFFFFF", borderRadius: 16, padding: 20, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)" },
-  balanceCardActive: { border: "1px solid #6366F1", boxShadow: "0 0 0 2px rgba(99, 102, 241, 0.1)" },
-  cardLabel: { fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase" as "uppercase", trackingWider: 1, marginBottom: 8 },
-  balanceAmount: { fontSize: 30, fontWeight: 700, color: "#0F172A", margin: "4px 0", fontFamily: "DM Mono, monospace" },
-  balanceSub: { display: "flex", alignItems: "flex-end", gap: 8, marginTop: 12 },
-  statusPillSuccess: { fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#ECFDF5", color: "#059669" },
-  progressBar: { marginTop: 16, height: 6, width: "100%", background: "#F1F5F9", borderRadius: 3, overflow: "hidden" as "hidden" },
-  progressFill: { height: "100%", background: "#6366F1", borderRadius: 3 },
-
-  section: { display: "flex", flexDirection: "column" as "column", gap: 16 },
-  sectionTitle: { fontSize: 14, fontWeight: 600, color: "#1E293B" },
-  
-  card: { background: "#FFFFFF", borderRadius: 16, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)", overflow: "hidden" as "hidden" },
-  cardHeader: { padding: "16px 24px", borderBottom: "1px solid #F1F5F9", display: "flex", justifyContent: "space-between", alignItems: "center" },
-  cardContent: { padding: 0 },
-
-  table: { width: "100%", borderCollapse: "collapse" as "collapse", textAlign: "left" as "left" },
-  thead: { background: "#F8FAFC", color: "#64748B", fontSize: 10, fontWeight: 700, textTransform: "uppercase" as "uppercase" },
-  th: { padding: "12px 16px", fontWeight: 700, whiteSpace: "nowrap" as "nowrap" },
-  tr: { borderBottom: "1px solid #F1F5F9", transition: "background 0.2s" },
-  td: { padding: "12px 16px", fontSize: 13, color: "#475569" },
-  tdBold: { fontWeight: 500, color: "#0F172A" },
-
-  dutyCard: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 24px", borderBottom: "1px solid #F1F5F9", gap: 12, flexWrap: "wrap" as "wrap" },
-  dutyLeft: { display: "flex", gap: 12, alignItems: "center", flex: 1, minWidth: 200 },
-  dutyEmoji: { width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: "#F1F5F9", borderRadius: 8, fontSize: 18 },
-  dutyName: { fontSize: 14, fontWeight: 500, color: "#0F172A" },
-  dutySub: { fontSize: 12, color: "#64748B" },
-  
-  badge: { padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600 },
-  badgeIndigo: { background: "#EEF2FF", color: "#4F46E5" },
-  badgeEmerald: { background: "#ECFDF5", color: "#059669" },
-  badgeAmber: { background: "#FFFBEB", color: "#B45309" },
-
-  primaryBtn: { padding: "8px 16px", background: "#4F46E5", color: "#FFFFFF", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 500, transition: "background 0.2s" },
-  dangerBtn: { padding: "8px 16px", background: "#F87171", color: "#FFFFFF", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 500 },
-
-  quickActions: { display: "flex", gap: 12 },
-  quickBtn: { flex: 1, padding: "12px", background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 12, cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#475569", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.05)" },
-
-  // Judge
-  bugCard: { padding: 16, background: "#fff", borderBottom: "1px solid #F1F5F9", position: "relative" as "relative" },
-  bugTarget: { fontSize: 13, fontWeight: 700, color: "#1E293B", textTransform: "uppercase" as "uppercase", trackingWider: 1 },
-  bugTimer: { fontSize: 12, fontWeight: 700 },
-  bugDesc: { fontSize: 15, color: "#475569", lineHeight: 1.5, margin: "12px 0" },
-  
-  // Overlay/Modal
-  overlay: { position: "fixed" as "fixed", inset: 0, background: "rgba(15, 23, 42, 0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, backdropFilter: "blur(8px)", padding: 16 },
-  modal: { background: "#FFFFFF", borderRadius: 24, padding: "24px 20px", width: "100%", maxWidth: 440, boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.5)", maxHeight: "90vh", overflowY: "auto" as "auto" },
-  modalTitle: { fontSize: 20, fontWeight: 700, color: "#0F172A", marginBottom: 8, letterSpacing: "-0.5px" },
-  modalSub: { fontSize: 13, color: "#EF4444", fontWeight: 600, marginBottom: 24 },
-  formGroup: { marginBottom: 20 },
-  label: { display: "block", fontSize: 12, fontWeight: 700, color: "#64748B", textTransform: "uppercase" as "uppercase", marginBottom: 8 },
-  segmented: { display: "flex", background: "#F1F5F9", borderRadius: 12, padding: 4, gap: 4 },
-  segBtn: { flex: 1, padding: "8px 4px", borderRadius: 8, border: "none", background: "none", fontSize: 12, fontWeight: 600, color: "#64748B", cursor: "pointer", transition: "all 0.2s" },
-  segBtnActive: { background: "#FFFFFF", color: "#4F46E5", boxShadow: "0 2px 4px rgba(0,0,0,0.05)" },
-  textarea: { width: "100%", height: 100, padding: 16, borderRadius: 12, border: "1px solid #E2E8F0", outline: "none", fontSize: 14, color: "#1E293B", transition: "border 0.2s" },
-  modalActions: { display: "flex", gap: 12, marginTop: 24 },
-  cancelBtn: { padding: "12px 16px", background: "#F1F5F9", color: "#475569", border: "none", borderRadius: 12, cursor: "pointer", fontWeight: 600, fontSize: 14 },
-  payoutPreview: { background: "#F8FAFC", borderRadius: 16, padding: 16, marginTop: 16, display: "flex", flexDirection: "column" as "column", gap: 12 },
-  payoutRow: { display: "flex", justifyContent: "space-between", fontSize: 14 },
-  payoutNote: { fontSize: 12, color: "#64748B", lineHeight: 1.5 },
-};
