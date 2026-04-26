@@ -977,8 +977,8 @@ export default function App() {
   const clearAllMedia = () => {
     persist(s => ({
       ...s,
-      bugs: s.bugs.map(b => ({ ...b, photo: undefined, resolutionPhoto: undefined })),
-      jobs: s.jobs.map(j => ({ ...j, photo: undefined, resolutionPhoto: undefined }))
+      bugs: s.bugs.map(b => ({ ...b, photo: "", resolutionPhoto: "" })),
+      jobs: s.jobs.map(j => ({ ...j, photo: "", resolutionPhoto: "" }))
     }));
     showToast("🧹 Облако очищено от медиафайлов", "success");
   };
@@ -1014,8 +1014,9 @@ export default function App() {
     }));
     setBugModal(false);
     setBugForm({ target: "none", desc: "", photo: "", hours: "24", minutes: "0" });
-    showToast(bug.target ? `🐛 Баг создан для ${state.users[bug.target].name}` : `🐛 Баг создан. Ожидание ответственного...`, "info");
-    sendTelegramMessage(`<b>🐛 Новый инцидент!</b>\nОтветственный: ${bug.target ? state.users[bug.target].name : 'Кто успеет'}\nОписание: ${bug.desc}`);
+    const bName = bug.target ? (state.users[bug.target]?.name || bug.target) : "";
+    showToast(bug.target ? `🐛 Баг создан для ${bName}` : `🐛 Баг создан. Ожидание ответственного...`, "info");
+    sendTelegramMessage(`<b>🐛 Новый инцидент!</b>\nОтветственный: ${bug.target ? bName : 'Кто успеет'}\nОписание: ${bug.desc}`);
   };
 
   const claimBug = (bugId: number) => {
@@ -1066,7 +1067,7 @@ export default function App() {
   const rejectBugReview = (bugId: number) => {
     persist((s) => ({
       ...s,
-      bugs: s.bugs.map((b) => (b.id === bugId ? { ...b, status: "open", resolutionPhoto: undefined } : b)),
+      bugs: s.bugs.map((b) => (b.id === bugId ? { ...b, status: "open", resolutionPhoto: "" } : b)),
     }));
     showToast("❌ Отправлено на доработку", "warn");
   };
@@ -1145,7 +1146,8 @@ export default function App() {
     }));
     showToast("Работа отправлена на проверку", "success");
     if (job) {
-      sendTelegramMessage(`<b>✅ Работа на проверку!</b>\nОт: ${state.users[activeUser as 'toma'|'valya']?.name}\nЗадача: ${job.title}`);
+      const uName = activeUser === 'admin' ? 'Админ' : (state.users[activeUser as 'toma'|'valya']?.name || activeUser);
+      sendTelegramMessage(`<b>✅ Работа на проверку!</b>\nОт: ${uName}\nЗадача: ${job.title}`);
     }
   };
 
@@ -1182,7 +1184,8 @@ export default function App() {
     setDelegateTitle("");
     setDelegatePrice("1");
     showToast("✅ Задача делегирована на Биржу", "success");
-    sendTelegramMessage(`<b>🤝 Передано на Биржу!</b>\nОт: ${state.users[activeUser as 'toma'|'valya'].name}\nУслуга: ${job.title}\nНаграда: ${reward.toFixed(2)}€`);
+    const uName = activeUser === 'admin' ? 'Админ' : (state.users[activeUser as 'toma'|'valya']?.name || activeUser);
+    sendTelegramMessage(`<b>🤝 Передано на Биржу!</b>\nОт: ${uName}\nУслуга: ${job.title}\nНаграда: ${reward.toFixed(2)}€`);
   };
 
   const acceptJob = (jobId: number) => {
@@ -1225,19 +1228,21 @@ export default function App() {
     showToast("✅ Работа принята и оплачена", "success");
     const job = state.jobs.find(j => j.id === jobId);
     if (job && job.assignee) {
-      sendTelegramMessage(`<b>⭐️ Работа принята!</b>\nИсполнитель: ${state.users[job.assignee].name}\nЗадача: ${job.title}\nНачислено: +${job.reward.toFixed(2)}€`);
+      const aName = state.users[job.assignee]?.name || job.assignee;
+      sendTelegramMessage(`<b>⭐️ Работа принята!</b>\nИсполнитель: ${aName}\nЗадача: ${job.title}\nНачислено: +${job.reward.toFixed(2)}€`);
     }
   };
 
   const rejectJob = (jobId: number) => {
     persist((s) => ({
       ...s,
-      jobs: s.jobs.map((j) => (j.id === jobId ? { ...j, status: "in_progress", resolutionPhoto: undefined } : j)),
+      jobs: s.jobs.map((j) => (j.id === jobId ? { ...j, status: "in_progress", resolutionPhoto: "" } : j)),
     }));
     showToast("❌ Отправлено на доработку", "warn");
     const job = state.jobs.find(j => j.id === jobId);
     if (job && job.assignee) {
-      sendTelegramMessage(`<b>❌ Работа возвращена на доработку</b>\nДля: ${state.users[job.assignee].name}\nЗадача: ${job.title}`);
+      const aName = state.users[job.assignee]?.name || job.assignee;
+      sendTelegramMessage(`<b>❌ Работа возвращена на доработку</b>\nДля: ${aName}\nЗадача: ${job.title}`);
     }
   };
 

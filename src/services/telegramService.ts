@@ -2,17 +2,17 @@
  * Service to send notifications to Telegram via Bot API
  */
 
-const BOT_TOKEN = (import.meta as any).env.VITE_TELEGRAM_BOT_TOKEN;
-const CHAT_ID = (import.meta as any).env.VITE_TELEGRAM_CHAT_ID;
+const BOT_TOKEN = ((import.meta as any).env.VITE_TELEGRAM_BOT_TOKEN || '').trim();
+const CHAT_ID = ((import.meta as any).env.VITE_TELEGRAM_CHAT_ID || '').trim();
 
 export const sendTelegramMessage = async (text: string): Promise<{success: boolean, error?: string}> => {
   if (!BOT_TOKEN) {
     console.warn('Telegram Notification skipped: VITE_TELEGRAM_BOT_TOKEN is missing');
-    return { success: false, error: 'Отсутствует токен бота (VITE_TELEGRAM_BOT_TOKEN)' };
+    return { success: false, error: 'В настройках не указан VITE_TELEGRAM_BOT_TOKEN' };
   }
   if (!CHAT_ID) {
     console.warn('Telegram Notification skipped: VITE_TELEGRAM_CHAT_ID is missing');
-    return { success: false, error: 'Отсутствует ID чата (VITE_TELEGRAM_CHAT_ID)' };
+    return { success: false, error: 'В настройках не указан VITE_TELEGRAM_CHAT_ID' };
   }
 
   try {
