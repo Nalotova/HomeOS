@@ -281,11 +281,12 @@ export const Dashboard = ({
             const uLogs = state.weeklyLog.filter(l => l.user === u);
             const expenses = Math.abs(uLogs.filter(l => l.event === "expense").reduce((acc, l) => acc + l.delta, 0));
             const fines = Math.abs(uLogs.filter(l => l.event === "kitchen_late" || l.event === "bug_fine").reduce((acc, l) => acc + l.delta, 0));
+            const earned = uLogs.filter(l => l.event === "job_reward").reduce((acc, l) => acc + l.delta, 0);
 
             return (
               <div key={u} style={{ ...styles.balanceCard, ...(isMine ? { border: "2px solid #4F46E5" } : {}), paddingBottom: 24, position: "relative" }}>
                 {isKitchenDuty && (
-                  <div style={{ position: "absolute", top: 16, right: 16, fontSize: 96 }}>🍳</div>
+                  <div style={{ position: "absolute", top: -8, right: 12, fontSize: 96 }}>🍳</div>
                 )}
                 <p style={styles.cardLabel}>{usr.name.toUpperCase()}</p>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginTop: 4, marginBottom: 16 }}>
@@ -293,7 +294,8 @@ export const Dashboard = ({
                   <span style={{ fontSize: isMobile ? 24 : 32, fontWeight: 500, color: "#94A3B8" }}>€</span>
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", minHeight: 24, marginTop: 12 }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: "#F1F5F9", color: "#475569", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'balance', title: 'Основной баланс'})}>💰 Всего: {usr.totalEarned.toFixed(2)} €</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: "#F1F5F9", color: "#475569", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'balance', title: 'Основной баланс'})}>💰 Баланс: {usr.totalEarned.toFixed(2)} €</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: earned > 0 ? "#F5F3FF" : "#F8FAFC", color: earned > 0 ? "#7C3AED" : "#94A3B8", boxShadow: earned > 0 ? "0 1px 2px rgba(124, 58, 237, 0.1)" : "none" }}>💼 Заработано: +{earned.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: usr.gymWallet > 0 ? "#ECFDF5" : "#F8FAFC", color: usr.gymWallet > 0 ? "#059669" : "#94A3B8", boxShadow: usr.gymWallet > 0 ? "0 1px 2px rgba(5, 150, 105, 0.1)" : "none", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'gymWallet', title: 'Зал'})}>🏋️ Зал: +{usr.gymWallet.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: expenses > 0 ? "#EFF6FF" : "#F8FAFC", color: expenses > 0 ? "#2563EB" : "#94A3B8", boxShadow: expenses > 0 ? "0 1px 2px rgba(37, 99, 235, 0.1)" : "none", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'expenses', title: 'Траты'})}>🍬 Траты: -{expenses.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: fines > 0 ? "#FEF2F2" : "#F8FAFC", color: fines > 0 ? "#DC2626" : "#94A3B8", boxShadow: fines > 0 ? "0 1px 2px rgba(220, 38, 38, 0.1)" : "none", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'fines', title: 'Штрафы'})}>⚠️ Штрафы: -{fines.toFixed(2)} €</span>
