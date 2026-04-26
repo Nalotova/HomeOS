@@ -37,6 +37,9 @@ export interface Job {
   photo?: string;
   resolutionPhoto?: string;
   isParentTask?: boolean;
+  failedUser?: 'toma' | 'valya' | null;
+  forbiddenUser?: 'toma' | 'valya' | null;
+  rescueDeadline?: string;
   created: string;
   linkedTask?: {
     type: 'waste' | 'cleaning' | 'kitchen';

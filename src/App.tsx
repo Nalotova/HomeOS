@@ -809,7 +809,27 @@ export default function App() {
         });
 
         toExpireJobs.forEach(job => {
-          nextJobs = nextJobs.map(j => j.id === job.id ? { ...j, status: 'expired', assignee: null } : j);
+          if (job.assignee) {
+            const failedUser = job.assignee;
+            // Mark original as expired
+            nextJobs = nextJobs.map(j => j.id === job.id ? { ...j, status: 'expired' } : j);
+            
+            // Create "rescue" version
+            nextJobs.push({
+              ...job,
+              id: Date.now() + Math.random(),
+              status: 'open',
+              assignee: null,
+              deadline: new Date(Date.now() + 12 * 3600000).toISOString(), // Soft extension
+              title: `🆘 СПАСЕНИЕ: ${job.title} (от ${s.users[failedUser].name})`,
+              failedUser: failedUser, // Track who failed it
+              forbiddenUser: null, // No one forbidden yet
+              created: todayISO()
+            });
+            sendTelegramMessage(`<b>🚑 Задача просрочена!</b>\n${s.users[failedUser].name} не справился с: ${job.title}\nЛюбой может перехватить ее на Бирже!`);
+          } else {
+             nextJobs = nextJobs.map(j => j.id === job.id ? { ...j, status: 'expired' } : j);
+          }
         });
 
         const nextKitchenTasks = { ...s.kitchenTasks };
@@ -833,6 +853,7 @@ export default function App() {
                     deadline: new Date(Date.now() + 2 * 3600000).toISOString(),
                     status: 'open',
                     assignee: null,
+                    forbiddenUser: dutyUser,
                     created: todayISO()
                 });
             }
@@ -863,6 +884,7 @@ export default function App() {
                             deadline: new Date(Date.now() + 4 * 3600000).toISOString(),
                             status: 'open',
                             assignee: null,
+                            forbiddenUser: userU,
                             created: todayISO()
                         });
                     }
@@ -878,6 +900,35 @@ export default function App() {
       if (toExpire.length > 0) showToast(`Баг просрочен. Штраф ${state.bugs.find(b => toExpire.map(ex => ex.id).includes(b.id))?.fine || 1.0} €`, "error");
       if (kitchenOverdue || cleaningOverdue) showToast("Просрочка по дежурству. Штраф 2.0 €", "error");
       if (toExpireJobs.length > 0) showToast("Время на выполнение работы истекло", "warn");
+    }
+
+    // --- Rescue Deadline Checks ---
+    const rescueExpired = state.jobs.filter(j => 
+      j.status === 'in_progress' && 
+      j.rescueDeadline && 
+      new Date(j.rescueDeadline).getTime() < now
+    );
+
+    if (rescueExpired.length > 0) {
+      persist(s => ({
+        ...s,
+        jobs: s.jobs.map(j => {
+          const expired = rescueExpired.find(re => re.id === j.id);
+          if (expired) {
+            return {
+              ...j,
+              status: 'open',
+              assignee: null,
+              rescueDeadline: undefined,
+              forbiddenUser: j.assignee, // Now they are really forbidden
+            };
+          }
+          return j;
+        })
+      }));
+      rescueExpired.forEach(j => {
+        sendTelegramMessage(`<b>⏰ Время на исправление истекло!</b>\n${state.users[j.assignee!].name} не успел(а) за 2 часа.\nТеперь ${j.assignee === 'toma' ? 'Валечка' : 'Томочка'} может забрать это до 08:00!`);
+      });
     }
   }, [tick, state.bugs, state.jobs, persist]);
 
@@ -1143,11 +1194,33 @@ export default function App() {
 
   const takeJob = (jobId: number) => {
     if (activeUser === "admin") return;
+    const job = state.jobs.find(j => j.id === jobId);
+    if (!job) return;
+
+    if (job.forbiddenUser === activeUser) {
+      showToast("⛔ Это задание просрочили вы слишком много раз, пусть сделает кто-то другой", "error");
+      return;
+    }
+
+    const isSelfRescue = job.failedUser === activeUser;
+    const rescueDl = isSelfRescue ? new Date(Date.now() + 2 * 3600000).toISOString() : undefined;
+
     persist((s) => ({
       ...s,
-      jobs: s.jobs.map(j => j.id === jobId ? { ...j, assignee: activeUser as "toma"|"valya", status: "in_progress" } : j)
+      jobs: s.jobs.map(j => j.id === jobId ? { 
+        ...j, 
+        assignee: activeUser as "toma"|"valya", 
+        status: "in_progress",
+        rescueDeadline: rescueDl
+      } : j)
     }));
-    showToast("💪 Вы взяли работу!", "success");
+    
+    if (isSelfRescue) {
+        showToast("🏃 Шанс исправиться! У вас есть 2 часа!", "warn");
+        sendTelegramMessage(`<b>🏃 Вторая попытка!</b>\n${state.users[activeUser as 'toma'|'valya'].name} пытается исправить свою просроченную задачу: ${job.title}\nУ него/нее есть 2 часа!`);
+    } else {
+        showToast("💪 Вы взяли работу!", "success");
+    }
   };
 
   const attachPhotoToJob = (jobId: number, base64: string) => {
@@ -2284,7 +2357,7 @@ export default function App() {
           ) : (
             activeJobs.map(job => {
                 const isClaimed = job.status !== 'open';
-                const canTake = !isClaimed && activeUser !== "admin" && activeUser !== job.creator;
+                const canTake = !isClaimed && activeUser !== "admin" && activeUser !== job.creator && activeUser !== job.forbiddenUser;
                 const timeStr = timeLeft(job.deadline);
                 
                 return (
@@ -2349,9 +2422,13 @@ export default function App() {
 
                             <h3 style={{ fontSize: 16, fontWeight: 800, color: "#0F172A", margin: "0 0 4px 0", lineHeight: 1.2 }}>{job.title}</h3>
                             
-                            <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4, color: "#2563EB", fontWeight: 700, fontSize: 12 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4, color: job.rescueDeadline ? "#EF4444" : "#2563EB", fontWeight: 700, fontSize: 12 }}>
                                 <Timer size={12} />
-                                <span>{job.status === 'review' ? "Ожидает проверки" : `Осталось ${timeStr}`}</span>
+                                <span>
+                                    {job.status === 'review' ? "Ожидает проверки" : 
+                                     job.rescueDeadline ? `СРОЧНО ИСПРАВИТЬ: ${timeLeft(job.rescueDeadline)}!` :
+                                     `Осталось ${timeStr}`}
+                                </span>
                             </div>
                             <div style={{ marginTop: 4, fontSize: 11, color: "#64748B", fontWeight: 500 }}>
                                 {job.creator === "admin" ? "Заказ: Родители" : `От: ${state.users[job.creator]?.name || '?'}`}
