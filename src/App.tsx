@@ -3285,7 +3285,7 @@ export default function App() {
             }}>
               {[
                 { id: "dashboard", icon: DashboardIcon, label: "Обзор", count: isAdmin ? pendingGym.length : 0 },
-                { id: "tasks", icon: TasksIcon, label: "Задачи", count: state.kitchenDuty === activeUser && !state.kitchenDone ? 1 : 0 },
+                { id: "tasks", icon: TasksIcon, label: "Задачи", count: (activeUser === "admin" ? state.jobs.filter(j => (j as any).isParentTask && j.status === 'open').length : (state.kitchenDuty === activeUser && !state.kitchenDone ? 1 : 0)) },
                 { id: "judge", icon: BugIcon, label: "Баги", count: openBugs.length },
                 { id: "market", icon: MarketIcon, label: "Биржа", count: state.jobs.filter(j => (j.status === 'open' || j.status === 'review') && !(j as any).isParentTask).length },
                 { id: "ledger", icon: ActivityIcon, label: "Лента" },
