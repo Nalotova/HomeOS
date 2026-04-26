@@ -5,7 +5,7 @@
 const BOT_TOKEN = ((import.meta as any).env.VITE_TELEGRAM_BOT_TOKEN || '').trim();
 const CHAT_ID = ((import.meta as any).env.VITE_TELEGRAM_CHAT_ID || '').trim();
 
-export const sendTelegramMessage = async (text: string): Promise<{success: boolean, error?: string}> => {
+export const sendTelegramMessage = async (text: string, replyMarkup?: any): Promise<{success: boolean, error?: string}> => {
   if (!BOT_TOKEN) {
     console.warn('Telegram Notification skipped: VITE_TELEGRAM_BOT_TOKEN is missing');
     return { success: false, error: 'В настройках не указан VITE_TELEGRAM_BOT_TOKEN' };
@@ -26,6 +26,7 @@ export const sendTelegramMessage = async (text: string): Promise<{success: boole
         chat_id: CHAT_ID,
         text: text,
         parse_mode: 'HTML',
+        reply_markup: replyMarkup
       }),
     });
 

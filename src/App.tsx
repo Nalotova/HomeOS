@@ -127,6 +127,7 @@ const defaultState = (): AppState => {
     weeklyWinner: null,
     totalPaidOut: 0,
     generalMessage: null,
+    generalMessageRead: { toma: false, valya: false },
   };
 };
 
@@ -409,6 +410,25 @@ export default function App() {
   const [tick, setTick] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>("default");
+
+  // --- Handle URL Actions (like "message read") ---
+  useEffect(() => {
+    if (!hasSynced) return;
+    const params = new URLSearchParams(window.location.search);
+    const readUser = params.get("readMsg");
+    if (readUser && (readUser === "toma" || readUser === "valya")) {
+      persist(s => ({
+        ...s,
+        generalMessageRead: {
+          ...(s.generalMessageRead || { toma: false, valya: false }),
+          [readUser]: true
+        }
+      }));
+      // Clean up URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+      showToast("✅ Сообщение отмечено как прочитанное", "success");
+    }
+  }, [hasSynced]);
 
   const lastSeenBugId = useRef<number>(0);
   const lastSeenJobId = useRef<number>(0);
@@ -2577,10 +2597,35 @@ export default function App() {
                     />
                     <button 
                         style={{ ...styles.primaryBtn, width: '100%', marginTop: 10, background: "#6366F1" }}
-                        onClick={() => persist(s => ({ ...s, generalMessage: localMessage || null }))}
+                        onClick={() => {
+                          persist(s => ({ ...s, generalMessage: localMessage || null, generalMessageRead: { toma: false, valya: false } }));
+                          if (localMessage) {
+                            const baseUrl = window.location.origin;
+                            sendTelegramMessage(`<b>📢 Сообщение для всех:</b>\n\n${localMessage}`, {
+                              inline_keyboard: [
+                                [
+                                  { text: `✅ Я, ${state.users.toma.name}, прочитала`, url: `${baseUrl}?readMsg=toma` },
+                                  { text: `✅ Я, ${state.users.valya.name}, прочитала`, url: `${baseUrl}?readMsg=valya` }
+                                ]
+                              ]
+                            });
+                          }
+                          showToast("Сообщение отправлено везде", "success");
+                        }}
                     >
-                        Отправить сообщение детям
+                        Отправить сообщение детям 🚀
                     </button>
+                    {state.generalMessage && (
+                      <div style={{ marginTop: 12, fontSize: 13, color: "#64748B", display: "flex", gap: 10 }}>
+                        <span>Прочитано:</span>
+                        <span style={{ color: state.generalMessageRead?.toma ? "#10B981" : "#EF4444", fontWeight: 600 }}>
+                          {state.users.toma.name} {state.generalMessageRead?.toma ? "✅" : "❌"}
+                        </span>
+                        <span style={{ color: state.generalMessageRead?.valya ? "#10B981" : "#EF4444", fontWeight: 600 }}>
+                          {state.users.valya.name} {state.generalMessageRead?.valya ? "✅" : "❌"}
+                        </span>
+                      </div>
+                    )}
                 </div>
             </div>
         )}

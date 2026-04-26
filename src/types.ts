@@ -84,6 +84,7 @@ export interface AppState {
   weeklyWinner: { name: string; emoji: string; week: string } | null;
   totalPaidOut: number;
   generalMessage: string | null;
+  generalMessageRead?: { toma: boolean; valya: boolean };
 }
 
 export interface FirestoreErrorInfo {
