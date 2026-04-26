@@ -128,6 +128,7 @@ const defaultState = (): AppState => {
     totalPaidOut: 0,
     generalMessage: null,
     generalMessageRead: { toma: false, valya: false },
+    vacationMode: false,
   };
 };
 
@@ -545,7 +546,7 @@ export default function App() {
 
   // --- Deadline Reminders ---
   useEffect(() => {
-    if (!hasSynced || !activeUser) return;
+    if (!hasSynced || !activeUser || state.vacationMode) return;
 
     try {
         const now = Date.now();
@@ -615,7 +616,7 @@ export default function App() {
   }, [state.users.toma?.name, state.users.valya?.name, persist, hasSynced]);
 
   useEffect(() => {
-    if (!hasSynced) return;
+    if (!hasSynced || state.vacationMode) return;
     const todayStr = today();
     const day = new Date().getDay();
     const expectedDuty = (day % 2 === 1) ? "toma" : "valya";
@@ -722,7 +723,7 @@ export default function App() {
   }, [state.lastKitchenRotation, state.kitchenDuty, state.week, state.wastes, state.monthlyZones, state.lastMonthlyRotation, persist]);
 
   useEffect(() => {
-    if (!hasSynced) return;
+    if (!hasSynced || state.vacationMode) return;
     const now = Date.now();
     
     // Kitchen Penalties
@@ -2671,6 +2672,33 @@ export default function App() {
               </div>
               <button style={{ ...styles.primaryBtn, width: isMobile ? "100%" : "auto" }} onClick={() => setPayoutConfirm(true)}>
                 Выплата
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div style={styles.section}>
+          <h3 style={styles.sectionTitle}>Режим отпуска (Пауза)</h3>
+          <div style={styles.card}>
+            <div style={styles.dutyCard}>
+              <div style={{ flex: 1 }}>
+                <p style={{ fontWeight: 600 }}>🏝️ Вся семья в отпуске</p>
+                <p style={{ fontSize: 12, color: "#64748B" }}>
+                  {state.vacationMode 
+                    ? "СИСТЕМА НА ПАУЗЕ. Штрафы не начисляются, дедлайны не проверяются, роли не меняются." 
+                    : "Приостановить все автоматические процессы (дежурства, штрафы, задания) на время отъезда."}
+                </p>
+              </div>
+              <button 
+                style={{ ...styles.primaryBtn, background: state.vacationMode ? "#EF4444" : "#10B981" }} 
+                onClick={() => {
+                  const nextVal = !state.vacationMode;
+                  persist(s => ({ ...s, vacationMode: nextVal }));
+                  showToast(nextVal ? "Режим ОТПУСКА активирован 🏝️" : "Система возвращена к работе 🚀", "info");
+                  sendTelegramMessage(nextVal ? "<b>🏝️ Система переведена в РЕЖИМ ОТПУСКА!</b>\nВсе автоматические процессы приостановлены." : "<b>🚀 С возвращением! Режим отпуска ВЫКЛЮЧЕН.</b>\nСистема снова проверяет дедлайны.");
+                }}
+              >
+                {state.vacationMode ? "Выключить отпуск" : "Активировать отпуск"}
               </button>
             </div>
           </div>

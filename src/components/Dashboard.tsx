@@ -96,6 +96,24 @@ export const Dashboard = ({
     return (
       <div className="animate-in slide-in-from-bottom-3 duration-300" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
         
+        {state.vacationMode && (
+          <div style={{ 
+            background: "linear-gradient(135deg, #FFEDD5 0%, #FED7AA 100%)", 
+            padding: "16px 20px", 
+            borderRadius: 24, 
+            display: "flex", 
+            alignItems: "center", 
+            gap: 16,
+            border: "1px solid #FDBA74"
+          }}>
+            <div style={{ fontSize: 32 }}>🏝️</div>
+            <div>
+              <p style={{ fontWeight: 800, color: "#9A3412", fontSize: 16 }}>РЕЖИМ ОТПУСКА АКТИВЕН</p>
+              <p style={{ fontSize: 13, color: "#C2410C", fontWeight: 500 }}>Все задания, штрафы и дежурства приостановлены. Отдыхаем! ✨</p>
+            </div>
+          </div>
+        )}
+
         {notificationPermission !== "granted" && notificationPermission !== "denied" && (
             <motion.div 
                 initial={{ opacity: 0, scale: 0.95 }}

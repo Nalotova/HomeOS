@@ -85,6 +85,7 @@ export interface AppState {
   totalPaidOut: number;
   generalMessage: string | null;
   generalMessageRead?: { toma: boolean; valya: boolean };
+  vacationMode?: boolean;
 }
 
 export interface FirestoreErrorInfo {
