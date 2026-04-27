@@ -300,6 +300,8 @@ export const Dashboard = ({
             const expenses = Math.abs(uLogs.filter(l => l.event === "expense").reduce((acc, l) => acc + l.delta, 0));
             const fines = Math.abs(uLogs.filter(l => l.event === "kitchen_late" || l.event === "bug_fine").reduce((acc, l) => acc + l.delta, 0));
             const earned = uLogs.filter(l => l.event === "job_reward").reduce((acc, l) => acc + l.delta, 0);
+            const profit = earned + usr.gymWallet - expenses - fines;
+            const currentBalance = usr.balance; // Starting 10 + earned - expenses - fines
 
             return (
               <div key={u} style={{ ...styles.balanceCard, ...(isMine ? { border: "2px solid #4F46E5" } : {}), paddingBottom: 24, position: "relative" }}>
@@ -310,17 +312,23 @@ export const Dashboard = ({
                 <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginTop: 4, marginBottom: 16 }}>
                   <h2 style={{ fontSize: isMobile ? 40 : 48, fontWeight: 700, color: "#0F172A", letterSpacing: "-1px", lineHeight: 1 }}>{weeklyExpected(u).toFixed(2)}</h2>
                   <span style={{ fontSize: isMobile ? 24 : 32, fontWeight: 500, color: "#94A3B8" }}>€</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: profit >= 0 ? "#10B981" : "#EF4444", marginLeft: 8 }}>
+                    {profit >= 0 ? "+" : ""}{profit.toFixed(2)} за неделю
+                  </span>
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", minHeight: 24, marginTop: 12 }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: "#F1F5F9", color: "#475569", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'balance', title: 'Основной баланс'})}>💰 Баланс: {usr.totalEarned.toFixed(2)} €</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: earned > 0 ? "#F5F3FF" : "#F8FAFC", color: earned > 0 ? "#7C3AED" : "#94A3B8", boxShadow: earned > 0 ? "0 1px 2px rgba(124, 58, 237, 0.1)" : "none" }}>💼 Заработано: +{earned.toFixed(2)} €</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: "#EEF2FF", color: "#4F46E5", cursor: isAdmin ? "pointer" : "default", boxShadow: "0 1px 2px rgba(79, 70, 229, 0.1)" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'balance', title: 'Основной счет (Деньги на руках)'})}>💵 Кошелек: {currentBalance.toFixed(2)} €</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: earned > 0 ? "#F5F3FF" : "#F8FAFC", color: earned > 0 ? "#7C3AED" : "#94A3B8", boxShadow: earned > 0 ? "0 1px 2px rgba(124, 58, 237, 0.1)" : "none", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'reward', title: 'Премия/Начисление'})}>💼 Работы: +{earned.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: usr.gymWallet > 0 ? "#ECFDF5" : "#F8FAFC", color: usr.gymWallet > 0 ? "#059669" : "#94A3B8", boxShadow: usr.gymWallet > 0 ? "0 1px 2px rgba(5, 150, 105, 0.1)" : "none", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'gymWallet', title: 'Зал'})}>🏋️ Зал: +{usr.gymWallet.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: expenses > 0 ? "#EFF6FF" : "#F8FAFC", color: expenses > 0 ? "#2563EB" : "#94A3B8", boxShadow: expenses > 0 ? "0 1px 2px rgba(37, 99, 235, 0.1)" : "none", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'expenses', title: 'Траты'})}>🍬 Траты: -{expenses.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: fines > 0 ? "#FEF2F2" : "#F8FAFC", color: fines > 0 ? "#DC2626" : "#94A3B8", boxShadow: fines > 0 ? "0 1px 2px rgba(220, 38, 38, 0.1)" : "none", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'fines', title: 'Штрафы'})}>⚠️ Штрафы: -{fines.toFixed(2)} €</span>
+                  <div style={{ width: "100%", height: "1px", background: "#E2E8F0", margin: "4px 0" }} />
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700, color: "#94A3B8", padding: "2px 4px" }}>🏅 НАКОПЛЕНО ВСЕГО: {usr.totalEarned.toFixed(2)} €</span>
                 </div>
               </div>
             );
           })}
+
         </div>
 
         {isAdmin && (

@@ -361,7 +361,7 @@ export default function App() {
   const [spendForm, setSpendForm] = useState({ user: "toma" as "toma" | "valya", amount: "", category: "Вкусняшки" });
   const [payoutConfirm, setPayoutConfirm] = useState(false);
   const [manualAdjustments, setManualAdjustments] = useState<Record<string, string>>({ toma: "1.0", valya: "1.0" });
-  const [adjustModal, setAdjustModal] = useState<{ user: 'toma' | 'valya', type: 'balance' | 'gymWallet' | 'expenses' | 'fines', title: string } | null>(null);
+  const [adjustModal, setAdjustModal] = useState<{ user: 'toma' | 'valya', type: 'balance' | 'gymWallet' | 'expenses' | 'fines' | 'reward', title: string } | null>(null);
   const [delegateModal, setDelegateModal] = useState<{ type: 'waste' | 'cleaning' | 'kitchen', user: 'toma' | 'valya', title: string } | null>(null);
   const [adjustForm, setAdjustForm] = useState({ amount: "", desc: "" });
 
@@ -383,25 +383,30 @@ export default function App() {
         nextUsers[adjustModal.user] = { ...targetUser, balance: targetUser.balance + delta };
       } else if (adjustModal.type === 'gymWallet') {
         nextUsers[adjustModal.user] = { ...targetUser, gymWallet: targetUser.gymWallet + delta };
-      } else if (adjustModal.type === 'expenses') {
+      } else if (adjustModal.type === 'expenses' || adjustModal.type === 'fines') {
         nextUsers[adjustModal.user] = { ...targetUser, balance: targetUser.balance + delta };
-      } else if (adjustModal.type === 'fines') {
+      } else if (adjustModal.type === 'reward') {
         nextUsers[adjustModal.user] = { ...targetUser, balance: targetUser.balance + delta };
       }
+
+      const eventType = adjustModal.type === 'expenses' ? 'expense' : 
+                         adjustModal.type === 'fines' ? 'bug_fine' : 
+                         adjustModal.type === 'gymWallet' ? 'gym' : 
+                         adjustModal.type === 'reward' ? 'job_reward' : 'base';
 
       const nextWeeklyLog = [...s.weeklyLog, {
         date: todayISO(),
         user: adjustModal.user,
-        event: adjustModal.type === 'expenses' ? 'expense' : adjustModal.type === 'fines' ? 'bug_fine' : 'base',
+        event: eventType,
         delta: delta,
-        note: `Ручная корректировка: ${adjustForm.desc || adjustModal.title}`
+        note: `Админ: ${adjustForm.desc || adjustModal.title}`
       }];
 
       return { ...s, users: nextUsers, weeklyLog: nextWeeklyLog };
     });
     setAdjustModal(null);
     setAdjustForm({ amount: "", desc: "" });
-    showToast("Баланс скорректирован", "success");
+    showToast(`Баланс ${state.users[adjustModal.user].name} обновлен`, "success");
   };
   const [delegatePrice, setDelegatePrice] = useState("1");
   const [delegateTitle, setDelegateTitle] = useState("");
@@ -2022,6 +2027,40 @@ export default function App() {
                 </div>
             )}
 
+            {/* GYM APPROVALS FOR ADMIN */}
+            {isAdmin && pendingGym.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                    <h3 style={{ fontSize: 16, fontWeight: 800, color: "#92400E", marginBottom: 12 }}>🏋️ Запросы на зал ({pendingGym.length})</h3>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                        {pendingGym.map((log) => {
+                            const globalIdx = state.gymLogs.findIndex(g => g === log);
+                            return (
+                                <div key={globalIdx} style={{ background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 16, padding: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                    <div>
+                                        <div style={{ fontWeight: 700, color: "#1E293B" }}>{state.users[log.user].name}</div>
+                                        <div style={{ fontSize: 12, color: "#64748B" }}>Зал · +4.00 €</div>
+                                    </div>
+                                    <div style={{ display: "flex", gap: 8 }}>
+                                        <button 
+                                            style={{ ...styles.primaryBtn, background: "#EF4444", padding: "6px 12px", fontSize: 12 }} 
+                                            onClick={() => rejectGym(globalIdx)}
+                                        >
+                                            Отклонить
+                                        </button>
+                                        <button 
+                                            style={{ ...styles.primaryBtn, background: "#10B981", padding: "6px 12px", fontSize: 12 }} 
+                                            onClick={() => confirmGym(globalIdx)}
+                                        >
+                                            Одобрить
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
             {/* ADMIN REQUESTS (For Admin only) - AT BOTTOM */}
             {isAdmin && adminRequests.length > 0 && (
                 <div style={{ marginTop: 12 }}>
@@ -3284,8 +3323,8 @@ export default function App() {
               paddingBottom: "env(safe-area-inset-bottom)"
             }}>
               {[
-                { id: "dashboard", icon: DashboardIcon, label: "Обзор", count: isAdmin ? pendingGym.length : 0 },
-                { id: "tasks", icon: TasksIcon, label: "Задачи", count: (activeUser === "admin" ? state.jobs.filter(j => (j as any).isParentTask && j.status === 'open').length : (state.kitchenDuty === activeUser && !state.kitchenDone ? 1 : 0)) },
+                { id: "dashboard", icon: DashboardIcon, label: "Обзор", count: 0 },
+                { id: "tasks", icon: TasksIcon, label: "Задачи", count: (activeUser === "admin" ? state.jobs.filter(j => (j as any).isParentTask && j.status === 'open').length + pendingGym.length : (state.kitchenDuty === activeUser && !state.kitchenDone ? 1 : 0)) },
                 { id: "judge", icon: BugIcon, label: "Баги", count: openBugs.length },
                 { id: "market", icon: MarketIcon, label: "Биржа", count: state.jobs.filter(j => (j.status === 'open' || j.status === 'review') && !(j as any).isParentTask).length },
                 { id: "ledger", icon: ActivityIcon, label: "Лента" },

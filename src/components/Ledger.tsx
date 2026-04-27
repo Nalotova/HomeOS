@@ -27,31 +27,38 @@ export const Ledger = ({ activeUser, isAdmin, state, weeklyExpected, deleteLogEn
 
     const eventLabel: Record<string, string> = {
       kitchen_late: "Задержка на кухне",
-      gym: "Подтверждение зала",
-      bug_fine: "Штраф за баг",
-      expense: "Вкусняшки/Расходы",
-      base: "Базовая выплата (неделя)",
+      gym: "Зал",
+      bug_fine: "Штраф",
+      expense: "Траты",
+      base: "Корректировка",
       job_reward: "Оплата за работу",
-      job_payment: "Расчет за работу",
+      job_payment: "Расчет",
     };
 
     return (
       <div className="animate-in slide-in-from-bottom-3 duration-300" style={{ display: "flex", flexDirection: "column", gap: 32 }}>
         <div style={styles.balanceGrid}>
           {(activeUser && activeUser !== "admin" ? [activeUser] : ["toma", "valya"]).map((u) => {
+            const usr = state.users[u as 'toma' | 'valya'];
             const uLogs = state.weeklyLog.filter(l => l.user === u);
             const expenses = Math.abs(uLogs.filter(l => l.event === "expense").reduce((acc, l) => acc + l.delta, 0));
             const fines = Math.abs(uLogs.filter(l => l.event === "kitchen_late" || l.event === "bug_fine").reduce((acc, l) => acc + l.delta, 0));
+            const earned = uLogs.filter(l => l.event === "job_reward").reduce((acc, l) => acc + l.delta, 0);
+            const profit = earned + usr.gymWallet - expenses - fines;
 
             return (
               <div key={u} style={{ ...styles.balanceCard, padding: 20 }}>
-                <p style={styles.cardLabel}>{state.users[u].name.toUpperCase()}</p>
+                <p style={styles.cardLabel}>{usr.name.toUpperCase()}</p>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginTop: 4, marginBottom: 16 }}>
                   <h2 style={{ fontSize: 32, fontWeight: 700, color: "#0F172A", letterSpacing: "-1px", lineHeight: 1 }}>{weeklyExpected(u).toFixed(2)}</h2>
                   <span style={{ fontSize: 20, fontWeight: 500, color: "#94A3B8" }}>€</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: profit >= 0 ? "#10B981" : "#EF4444", marginLeft: 8 }}>
+                    {profit >= 0 ? "+" : ""}{profit.toFixed(2)}
+                  </span>
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", minHeight: 20 }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, padding: "2px 10px", borderRadius: 20, background: state.users[u].gymWallet > 0 ? "#ECFDF5" : "#F8FAFC", color: state.users[u].gymWallet > 0 ? "#059669" : "#94A3B8" }}>🏋️ Зал: +{state.users[u].gymWallet.toFixed(2)} €</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, padding: "2px 10px", borderRadius: 20, background: usr.gymWallet > 0 ? "#ECFDF5" : "#F8FAFC", color: usr.gymWallet > 0 ? "#059669" : "#94A3B8" }}>🏋️ Зал: +{usr.gymWallet.toFixed(2)} €</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, padding: "2px 10px", borderRadius: 20, background: earned > 0 ? "#F5F3FF" : "#F8FAFC", color: earned > 0 ? "#7C3AED" : "#94A3B8" }}>💼 Заработано: +{earned.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, padding: "2px 10px", borderRadius: 20, background: expenses > 0 ? "#EFF6FF" : "#F8FAFC", color: expenses > 0 ? "#2563EB" : "#94A3B8" }}>🍬 Траты: -{expenses.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, padding: "2px 10px", borderRadius: 20, background: fines > 0 ? "#FEF2F2" : "#F8FAFC", color: fines > 0 ? "#DC2626" : "#94A3B8" }}>⚠️ Штрафы: -{fines.toFixed(2)} €</span>
                 </div>

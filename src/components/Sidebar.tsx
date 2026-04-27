@@ -29,8 +29,8 @@ export const Sidebar = ({ activeUser, view, setView, isAdmin, state, pendingGym,
 
       <nav style={styles.sidebarNav}>
         {[
-          { id: "dashboard", label: "Обзор", count: isAdmin ? pendingGym.length : 0 },
-          { id: "tasks", label: "Задачи", count: state.kitchenDuty === activeUser && !state.kitchenDone ? 1 : 0 },
+          { id: "dashboard", label: "Обзор", count: 0 },
+          { id: "tasks", label: "Задачи", count: (activeUser === "admin" ? state.jobs.filter(j => (j as any).isParentTask && j.status === 'open').length + pendingGym.length : (state.kitchenDuty === activeUser && !state.kitchenDone ? 1 : 0)) },
           { id: "judge", label: isAdmin ? "Баги" : "Мои баги", count: openBugs.length },
           { id: "market", label: "Биржа", count: state.jobs.filter(j => (j.status === 'open' || j.status === 'review') && !(j as any).isParentTask).length },
           { id: "ledger", label: "Ledger" },
