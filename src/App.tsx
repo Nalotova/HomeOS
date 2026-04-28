@@ -29,7 +29,7 @@ import {
   RefreshCw,
   Bell
 } from "lucide-react";
-import { AppState, Bug, Job, WeeklyLogEntry } from './types';
+import { AppState, Bug, Job, WeeklyLogEntry, AdminRequest } from './types';
 import { styles } from './styles';
 import { Sidebar } from './components/Sidebar';
 import { Dashboard } from './components/Dashboard';
@@ -286,62 +286,88 @@ export default function App() {
         kitchenTasks: nextKitchenTasks,
         cleaningTasks: nextCleaningTasks,
         wastes: nextWastes,
-        kitchenDone: nextKitchenDone,
-        cleaningDone: nextCleaningDone,
-        wasteDone: nextWasteDone
+        kitchenDone: true,
+        cleaningDone: { ...s.cleaningDone, [userKey]: true },
+        wasteDone: { ...s.wasteDone, [userKey]: true }
       };
     });
     
     showToast("Штраф отменен, работа зачтена ✅", "success");
   };
 
-  const requestPenaltyCancellation = (type: 'kitchen' | 'waste' | 'cleaning', userKey: 'toma' | 'valya') => {
+  const requestPenaltyCancellation = (category: 'kitchen' | 'waste' | 'cleaning', userKey: 'toma' | 'valya') => {
     if (isAdmin) return;
-    const userObj = state.users[userKey];
-    if (!userObj) return;
-    const name = userObj.name;
-    const typeLabel = type === 'kitchen' ? 'Кухня' : type === 'waste' ? 'Мусор' : 'Уборка';
+    const name = state.users[userKey].name;
+    const categoryLabel = category === 'kitchen' ? 'Кухня' : category === 'waste' ? 'Мусор' : 'Уборка';
     
     persist(s => {
-      // Check if already requested
-      const alreadyRequested = s.jobs.some(j => 
-        (j as any).isParentTask && 
-        j.linkedTask?.type === type && 
-        j.linkedTask?.user === userKey && 
-        j.linkedTask?.title === 'cancellation_request' && 
-        j.status === 'open'
+      const alreadyRequested = (s.adminRequests || []).some(r => 
+        r.user === userKey && r.category === category && r.status === 'pending'
       );
-      
       if (alreadyRequested) return s;
 
-      sendTelegramMessage(`<b>🆘 Запрос на отмену штрафа!</b>\nОт: ${name}\nКатегория: ${typeLabel}\nАдмин, проверь обоснованность!`);
+      const newReq: AdminRequest = {
+        id: Date.now(),
+        user: userKey,
+        type: 'penalty_cancellation',
+        category,
+        date: new Date().toISOString(),
+        status: 'pending'
+      };
+
+      sendTelegramMessage(`<b>🆘 Запрос на отмену штрафа!</b>\nОт: ${name}\nКатегория: ${categoryLabel}\nАдмин, проверь в приложении!`);
 
       return {
         ...s,
-        jobs: [...s.jobs, {
-          id: Date.now(),
-          creator: userKey,
-          title: `ОТМЕНА ШТРАФА: ${typeLabel} (${name})`,
-          reward: 0,
-          deadline: new Date(Date.now() + 24 * 3600000).toISOString(),
-          status: 'open',
-          assignee: 'admin' as any,
-          created: new Date().toISOString(),
-          linkedTask: { type, user: userKey, title: 'cancellation_request' },
-          isParentTask: true
-        } as any]
+        adminRequests: [...(s.adminRequests || []), newReq]
       };
     });
     showToast("Запрос на отмену штрафа отправлен!", "info");
   };
 
+  const resolvePenaltyAppeal = (reqId: number, approved: boolean) => {
+    if (!isAdmin) return;
+    persist(s => {
+      const requests = s.adminRequests || [];
+      const req = requests.find(r => r.id === reqId);
+      if (!req) return s;
+
+      let nextUsers = { ...s.users };
+      let nextWeeklyLog = [...s.weeklyLog];
+      let nextJobs = [...s.jobs];
+
+      if (approved) {
+        // Remove penalty
+        const userKey = req.user;
+        nextUsers[userKey] = { ...nextUsers[userKey], balance: nextUsers[userKey].balance + 2.0 };
+        
+        // Find and remove the specific penalty log
+        const logEvent = req.category === 'kitchen' ? 'kitchen_late' : req.category === 'waste' ? 'waste_late' : 'cleaning_late';
+        nextWeeklyLog = nextWeeklyLog.filter(l => !(l.user === userKey && l.event === logEvent && l.date === req.date.slice(0,10)));
+
+        // Remove the market job for this task
+        const jobTitleSnippet = req.category === 'kitchen' ? 'КУХНЯ' : req.category === 'waste' ? 'МУСОР' : 'УБОРКА';
+        nextJobs = nextJobs.filter(j => !(j.creator === 'admin' && j.title.includes(jobTitleSnippet) && j.title.includes(nextUsers[userKey].name)));
+
+        showToast("Штраф отменен!", "success");
+        sendTelegramMessage(`<b>✅ Штраф за ${req.category} (${nextUsers[userKey].name}) ОТМЕНЕН!</b>`);
+      } else {
+        showToast("Запрос отклонен. Штраф остается.", "error");
+        sendTelegramMessage(`<b>❌ Запрос на отмену штрафа за ${req.category} (${nextUsers[req.user].name}) ОТКЛОНЕН.</b>\nРабота должна быть выполнена!`);
+      }
+
+      return {
+        ...s,
+        users: nextUsers,
+        weeklyLog: nextWeeklyLog,
+        jobs: nextJobs,
+        adminRequests: requests.map(r => r.id === reqId ? { ...r, status: approved ? 'approved' : 'rejected' } : r)
+      };
+    });
+  };
+
   const resolveAdminRequest = (job: Job) => {
     if (!isAdmin) return;
-    
-    if (job.linkedTask?.title === 'cancellation_request') {
-      cancelPenalty(job.linkedTask.type, job.linkedTask.user);
-    }
-    
     persist(s => ({
       ...s,
       jobs: s.jobs.map(j => j.id === job.id ? { ...j, status: 'resolved' } : j)
@@ -551,28 +577,33 @@ export default function App() {
 
   // --- Deadline Reminders ---
   useEffect(() => {
-    if (!hasSynced || !activeUser || state.vacationMode) return;
+    if (!hasSynced || state.vacationMode) return;
 
     try {
         const now = Date.now();
         const thirtyMins = 30 * 60 * 1000;
+        const todayStr = today();
+        const todayISODate = todayISO();
+        const day = new Date().getDay();
 
         // Check Bugs
         state.bugs.forEach(bug => {
-            if (bug.status === 'open' && bug.target === activeUser) {
+            if (bug.status === 'open') {
                 const deadline = new Date(bug.deadline).getTime();
                 const timeUntil = deadline - now;
                 const tag = `deadline-bug-${bug.id}`;
 
                 if (timeUntil > 0 && timeUntil <= thirtyMins && !notifiedDeadlines.current.has(tag)) {
-                    if (notificationPermission === "granted") {
+                    // Local Browser Notification only for target
+                    if (bug.target === activeUser && notificationPermission === "granted") {
                         new Notification("⏰ Время истекает!", {
                             body: `Осталось 30 минут, чтобы исправить баг: ${bug.desc}`,
                             icon: "/logo.png",
                             tag
                         });
                     }
-                    sendTelegramMessage(`<b>⏰ Дедлайн!</b>\nОсталось 30 минут для задачи/бага:\n${bug.desc}`);
+                    // Telegram for everyone (but only if anyone with app open catches it)
+                    sendTelegramMessage(`<b>⏰ Напоминание: БАГ!</b>\nДля: ${bug.target ? state.users[bug.target].name : 'Всех'}\nОсталось 30 минут:\n${bug.desc}`);
                     notifiedDeadlines.current.add(tag);
                 }
             }
@@ -580,28 +611,97 @@ export default function App() {
 
         // Check Jobs
         state.jobs.forEach(job => {
-            if (job.status === 'in_progress' && job.assignee === activeUser) {
+            if (job.status === 'in_progress') {
                 const deadline = new Date(job.deadline).getTime();
                 const timeUntil = deadline - now;
                 const tag = `deadline-job-${job.id}`;
 
                 if (timeUntil > 0 && timeUntil <= thirtyMins && !notifiedDeadlines.current.has(tag)) {
-                    if (notificationPermission === "granted") {
+                    if (job.assignee === activeUser && notificationPermission === "granted") {
                         new Notification("⏳ Дедлайн на Бирже!", {
                             body: `Осталось 30 минут для задачи: ${job.title}`,
                             icon: "/logo.png",
                             tag
                         });
                     }
-                    sendTelegramMessage(`<b>⏳ Дедлайн на Бирже!</b>\nОсталось 30 минут:\n${job.title}`);
+                    sendTelegramMessage(`<b>⏳ Дедлайн на Бирже!</b>\nИсполнитель: ${job.assignee ? state.users[job.assignee].name : '?'}\nОсталось 30 минут:\n${job.title}`);
                     notifiedDeadlines.current.add(tag);
                 }
             }
         });
+
+        // --- Recurring Housekeeping Reminders ---
+        
+        // 1. Kitchen (Daily 22:30)
+        if (!state.kitchenDone) {
+            const kitchenDeadline = new Date();
+            kitchenDeadline.setHours(22, 30, 0, 0);
+            const h = new Date().getHours();
+            const m = new Date().getMinutes();
+            
+            if ((h === 21 && (m === 0 || m === 30)) || (h === 22 && m === 0)) {
+                const tag = `remind-kitchen-${todayISODate}-${h}-${m}`;
+                if (!notifiedDeadlines.current.has(tag)) {
+                    sendTelegramMessage(`<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${state.users[state.kitchenDuty].name}\nДо дедлайна (22:30) осталось ${Math.round((kitchenDeadline.getTime() - now)/60000)} мин. Пора наводить порядок! ✨`);
+                    notifiedDeadlines.current.add(tag);
+                }
+            }
+        }
+
+        // 2. Waste (Tue, Fri 18:00)
+        if (day === 2 || day === 5) {
+            const wasteDeadline = new Date();
+            wasteDeadline.setHours(18, 0, 0, 0);
+            const timeUntil = wasteDeadline.getTime() - now;
+            
+            ['toma', 'valya'].forEach(u => {
+                const userKey = u as 'toma' | 'valya';
+                const tasks = state.wastes[userKey] || {};
+                const hasIncomplete = Object.keys(tasks).filter(k => k.includes('waste')).some(k => !tasks[k]);
+                
+                if (hasIncomplete && !state.wasteDone?.[userKey]) {
+                    const h = new Date().getHours();
+                    const m = new Date().getMinutes();
+                    if (h === 17 && (m === 0 || m === 30)) {
+                        const tag = `remind-waste-${todayISODate}-${userKey}-${h}-${m}`;
+                        if (!notifiedDeadlines.current.has(tag)) {
+                            sendTelegramMessage(`<b>🚛 Мусор: Напоминание!</b>\nДля: ${state.users[userKey].name}\nДо 18:00 осталось ${m === 0 ? '60' : '30'} минут. Выноси пакеты! 🚮`);
+                            notifiedDeadlines.current.add(tag);
+                        }
+                    }
+                }
+            });
+        }
+
+        // 3. House Cleaning (Fri 18:00)
+        if (day === 5) {
+            const cleaningDeadline = new Date();
+            cleaningDeadline.setHours(18, 0, 0, 0);
+            const timeUntil = cleaningDeadline.getTime() - now;
+
+            ['toma', 'valya'].forEach(u => {
+                const userKey = u as 'toma' | 'valya';
+                const tasks = state.cleaningTasks[userKey] || {};
+                const hasIncomplete = Object.keys(tasks).some(k => !tasks[k]);
+                
+                if (hasIncomplete && !state.cleaningDone?.[userKey]) {
+                    const h = new Date().getHours();
+                    const m = new Date().getMinutes();
+                    if ((h === 15 || h === 17) && m < 5) {
+                        const tag = `remind-cleaning-${todayISODate}-${userKey}-${h}`;
+                        if (!notifiedDeadlines.current.has(tag)) {
+                            sendTelegramMessage(`<b>🧹 Уборка: Напоминание!</b>\n${state.users[userKey].name}, пора делать уборку. Дедлайн в 18:00! 💪`);
+                            notifiedDeadlines.current.add(tag);
+                        }
+                    }
+                }
+            });
+        }
+
     } catch (e) {
         console.warn("Deadline notification failed", e);
     }
-  }, [tick, state.bugs, state.jobs, activeUser, hasSynced, notificationPermission]);
+  }, [tick, state.bugs, state.jobs, state.kitchenDone, state.kitchenDuty, state.wasteDone, state.cleaningDone, activeUser, hasSynced, notificationPermission]);
 
    useEffect(() => {
     if (!hasSynced) return;
@@ -623,32 +723,17 @@ export default function App() {
   useEffect(() => {
     if (!hasSynced || state.vacationMode) return;
     const todayStr = today();
-    const day = new Date().getDay();
+    const now = new Date();
+    const day = now.getDay();
+    const isFirstOfMonth = now.getDate() === 1;
+    const currentMonthKey = `${now.getFullYear()}-${now.getMonth()}`;
     const expectedDuty = (day % 2 === 1) ? "toma" : "valya";
     const standardKeys = ["Plastik", "Bio", "Papier", "Restmuell", "plastik", "restmuell", "Пластик", "Био", "Бумага", "Черный"];
     
-    if (state.lastKitchenRotation !== todayStr || state.kitchenDuty !== expectedDuty || today().includes("01")) {
-      const now = new Date();
-      const isFirstOfMonth = now.getDate() === 1;
-      const currentMonthKey = `${now.getFullYear()}-${now.getMonth()}`;
-      
-      const weekNum = Math.floor(new Date(state.week).getTime() / (7 * 24 * 60 * 60 * 1000));
-      const swap = weekNum % 2 !== 0;
-      
-      let wasteTasks: Record<string, Record<string, boolean>> = { toma: {}, valya: {} };
-      if (day === 2) {
-        if (!swap) { wasteTasks.toma["Plastik"] = false; wasteTasks.valya["Bio"] = false; }
-        else { wasteTasks.toma["Bio"] = false; wasteTasks.valya["Plastik"] = false; }
-      } else if (day === 5) {
-        if (!swap) { 
-          wasteTasks.toma["Bio"] = false; wasteTasks.toma["Papier"] = false; 
-          wasteTasks.valya["Plastik"] = false; wasteTasks.valya["Restmuell"] = false; 
-        } else {
-          wasteTasks.toma["Plastik"] = false; wasteTasks.toma["Restmuell"] = false; 
-          wasteTasks.valya["Bio"] = false; wasteTasks.valya["Papier"] = false; 
-        }
-      }
+    const needsKitchenRotation = state.lastKitchenRotation !== todayStr || state.kitchenDuty !== expectedDuty;
+    const needsMonthlyRotation = isFirstOfMonth && state.lastMonthlyRotation !== currentMonthKey;
 
+    if (needsKitchenRotation || needsMonthlyRotation) {
       persist((s) => {
         const isNewDay = s.lastKitchenRotation !== todayStr;
         let nextWastes = { ...s.wastes };
@@ -657,6 +742,23 @@ export default function App() {
         let nextCleaningDone = { ...s.cleaningDone };
 
         if (isNewDay) {
+          // Generate new daily waste tasks
+          let wasteTasks: Record<string, Record<string, boolean>> = { toma: {}, valya: {} };
+          const weekNum = Math.floor(new Date(s.week).getTime() / (7 * 24 * 60 * 60 * 1000));
+          const swap = weekNum % 2 !== 0;
+
+          if (day === 2) {
+            if (!swap) { wasteTasks.toma["Plastik"] = false; wasteTasks.valya["Bio"] = false; }
+            else { wasteTasks.toma["Bio"] = false; wasteTasks.valya["Plastik"] = false; }
+          } else if (day === 5) {
+            if (!swap) { 
+              wasteTasks.toma["Bio"] = false; wasteTasks.toma["Papier"] = false; 
+              wasteTasks.valya["Plastik"] = false; wasteTasks.valya["Restmuell"] = false; 
+            } else {
+              wasteTasks.toma["Plastik"] = false; wasteTasks.toma["Restmuell"] = false; 
+              wasteTasks.valya["Bio"] = false; wasteTasks.valya["Papier"] = false; 
+            }
+          }
           nextWastes = wasteTasks;
           
           // Generate Friday Cleaning Tasks
@@ -679,18 +781,13 @@ export default function App() {
               valya: s.monthlyZones.valya === "Bad" ? bathroomTasks : toiletTasks
             };
             nextCleaningDone = { toma: false, valya: false };
-          } else {
-            // Clear cleaning tasks on non-cleaning days unless admin added something? 
-            // Better to keep them if not done, but user said "appearing on Fridays".
-            // Typically they should be cleared after Friday or once next period starts.
-            // Let's clear them on Monday.
-            if (day === 1) {
-              nextCleaningTasks = { toma: {}, valya: {} };
-              nextCleaningDone = { toma: false, valya: false };
-            }
+          } else if (day === 1) {
+            // Clear on Monday
+            nextCleaningTasks = { toma: {}, valya: {} };
+            nextCleaningDone = { toma: false, valya: false };
           }
         } else if (![2, 5].includes(day)) {
-          // Surgical cleanup of standard tasks on non-waste days if they somehow persisted
+          // Surgical cleanup of standard tasks on non-waste days
           ['toma', 'valya'].forEach(u => {
             const uTasks = { ...(nextWastes[u] || {}) };
             let changed = false;
@@ -705,7 +802,7 @@ export default function App() {
         }
 
         // Monthly Exchange on the 1st
-        if (isFirstOfMonth && s.lastMonthlyRotation !== currentMonthKey) {
+        if (needsMonthlyRotation) {
           nextMonthlyZones = { toma: s.monthlyZones.valya, valya: s.monthlyZones.toma };
         }
 
@@ -725,7 +822,7 @@ export default function App() {
         };
       });
     }
-  }, [state.lastKitchenRotation, state.kitchenDuty, state.week, state.wastes, state.monthlyZones, state.lastMonthlyRotation, persist]);
+  }, [state.lastKitchenRotation, state.kitchenDuty, state.lastMonthlyRotation, hasSynced, state.vacationMode, persist]);
 
   useEffect(() => {
     if (!hasSynced || state.vacationMode) return;
@@ -775,15 +872,36 @@ export default function App() {
       }
     }
 
+    const day = new Date().getDay();
     const toAutoAssign = state.bugs.filter(b => b.status === 'open' && b.target === null && b.autoAssignAt && new Date(b.autoAssignAt).getTime() < now);
     const toExpire = state.bugs.filter(b => b.status === 'open' && b.target !== null && new Date(b.deadline).getTime() < now && !b.fined);
     const toExpireJobs = state.jobs.filter(j => (j.status === 'open' || j.status === 'in_progress') && new Date(j.deadline).getTime() < now);
 
     // Track overdue housekeeping tasks
     const kitchenOverdue = !state.kitchenDone && state.kitchenDeadline && new Date(state.kitchenDeadline).getTime() < now;
-    const cleaningOverdue = Object.keys(state.cleaningDone).some(u => !state.cleaningDone[u] && new Date(state.week).getTime() + 7 * 24 * 3600000 < now); // Simplistic deadline for cleaning
+    
+    // Waste Overdue (Tue/Fri 18:00)
+    const isWasteDay = (day === 2 || day === 5);
+    const wasteDeadlineTime = new Date();
+    wasteDeadlineTime.setHours(18, 0, 0, 0);
+    const wasteOverdueFlag = isWasteDay && now > wasteDeadlineTime.getTime();
 
-    if (toAutoAssign.length > 0 || toExpire.length > 0 || toExpireJobs.length > 0 || kitchenOverdue || cleaningOverdue) {
+    // Cleaning Overdue (Fri 18:00)
+    const cleaningDeadlineTime = new Date();
+    cleaningDeadlineTime.setHours(18, 0, 0, 0);
+    const cleaningOverdueFlag = (day === 5 || day === 6 || day === 0) && now > cleaningDeadlineTime.getTime();
+
+    const needsKitchenEscalation = kitchenOverdue && !state.kitchenTasks["overdue_migrated"];
+    const needsWasteEscalation = wasteOverdueFlag && (
+        (!state.wasteDone?.toma && !state.wastes.toma?.overdue_migrated) || 
+        (!state.wasteDone?.valya && !state.wastes.valya?.overdue_migrated)
+    );
+    const needsCleaningEscalation = cleaningOverdueFlag && (
+        (!state.cleaningDone?.toma && !state.cleaningTasks.toma?.overdue_migrated) || 
+        (!state.cleaningDone?.valya && !state.cleaningTasks.valya?.overdue_migrated)
+    );
+
+    if (toAutoAssign.length > 0 || toExpire.length > 0 || toExpireJobs.length > 0 || needsKitchenEscalation || needsWasteEscalation || needsCleaningEscalation) {
       persist((s) => {
         let nextBugs = [...s.bugs];
         let nextJobs = [...s.jobs];
@@ -792,6 +910,7 @@ export default function App() {
         let nextLastTarget = s.lastBugTarget;
         let nextKitchenDone = s.kitchenDone;
         let nextCleaningDone = { ...s.cleaningDone };
+        let nextWasteDone = { ...s.wasteDone };
 
         toAutoAssign.forEach(bug => {
           // Auto-assign after 1 hour if no one claimed
@@ -851,7 +970,7 @@ export default function App() {
                 
                 // Move to market
                 nextJobs.push({
-                    id: Date.now() + 1,
+                    id: Date.now() + Math.floor(Math.random() * 1000) + 1,
                     creator: 'admin',
                     title: "КУХНЯ: Хвосты от " + s.users[dutyUser].name,
                     reward: 2,
@@ -868,7 +987,7 @@ export default function App() {
         }
         
         let nextCleaningTasks = { ...s.cleaningTasks };
-        if (cleaningOverdue) {
+        if (cleaningOverdueFlag) {
             Object.keys(s.cleaningDone).forEach(u => {
                 const userU = u as 'toma' | 'valya';
                 if (!s.cleaningDone[userU] && !s.cleaningTasks[userU]?.["overdue_migrated"]) {
@@ -877,12 +996,12 @@ export default function App() {
                     if (cleaningTaskNames.length > 0) {
                         const targetUser = nextUsers[userU];
                         nextUsers[userU] = { ...targetUser, balance: targetUser.balance - 2.0 };
-                        nextWeeklyLog.push({ date: todayISO(), user: userU, event: 'kitchen_late', delta: -2.0, note: "Просрочка уборки" });
+                        nextWeeklyLog.push({ date: todayISO(), user: userU, event: 'cleaning_late', delta: -2.0, note: "Просрочка уборки" });
                         sendTelegramMessage(`<b>🧹 Просрочка уборки!</b>\nПользователь: ${s.users[userU].name}\nШтраф: -2.00€\nЗадача на Бирже.`);
                         
                          // Move to market
                         nextJobs.push({
-                            id: Date.now() + 2,
+                            id: Date.now() + Math.floor(Math.random() * 1000) + 2,
                             creator: 'admin',
                             title: "УБОРКА: Хвосты от " + s.users[userU].name,
                             reward: 2,
@@ -900,10 +1019,44 @@ export default function App() {
             });
         }
 
-        return { ...s, bugs: nextBugs, jobs: nextJobs, users: nextUsers, weeklyLog: nextWeeklyLog, lastBugTarget: nextLastTarget, kitchenDone: nextKitchenDone, cleaningDone: nextCleaningDone, kitchenTasks: nextKitchenTasks, cleaningTasks: nextCleaningTasks };
+        // 3. Waste Overdue Escalation
+        let nextWastes = { ...s.wastes };
+        if (wasteOverdueFlag) {
+            ['toma', 'valya'].forEach(u => {
+                const userU = u as 'toma' | 'valya';
+                if (!s.wasteDone?.[userU] && !s.wastes[userU]?.["overdue_migrated"]) {
+                    const wasteTaskNames = Object.keys(s.wastes[userU] || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k));
+                    const hasIncomplete = wasteTaskNames.some(k => !s.wastes[userU][k]);
+
+                    if (hasIncomplete) {
+                        const targetUser = nextUsers[userU];
+                        nextUsers[userU] = { ...targetUser, balance: targetUser.balance - 2.0 };
+                        nextWeeklyLog.push({ date: todayISO(), user: userU, event: 'waste_late', delta: -2.0, note: "Просрочка мусора" });
+                        sendTelegramMessage(`<b>🔥 Просрочка мусора!</b>\nПользователь: ${s.users[userU].name}\nШтраф: -2.00€\nЗадача на Бирже.`);
+                        
+                        nextJobs.push({
+                            id: Date.now() + Math.floor(Math.random() * 1000) + 3,
+                            creator: 'admin',
+                            title: "МУСОР: Хвосты от " + s.users[userU].name,
+                            reward: 2,
+                            deadline: new Date(Date.now() + 2 * 3600000).toISOString(),
+                            status: 'open',
+                            assignee: null,
+                            forbiddenUser: userU,
+                            created: todayISO()
+                        });
+                    }
+
+                    nextWasteDone[userU] = true;
+                    nextWastes[userU] = { ...nextWastes[userU], "overdue_migrated": true };
+                }
+            });
+        }
+
+        return { ...s, bugs: nextBugs, jobs: nextJobs, users: nextUsers, weeklyLog: nextWeeklyLog, lastBugTarget: nextLastTarget, kitchenDone: nextKitchenDone, cleaningDone: nextCleaningDone, wasteDone: nextWasteDone, kitchenTasks: nextKitchenTasks, cleaningTasks: nextCleaningTasks, wastes: nextWastes };
       });
       if (toExpire.length > 0) showToast(`Баг просрочен. Штраф ${state.bugs.find(b => toExpire.map(ex => ex.id).includes(b.id))?.fine || 1.0} €`, "error");
-      if (kitchenOverdue || cleaningOverdue) showToast("Просрочка по дежурству. Штраф 2.0 €", "error");
+      if (kitchenOverdue || cleaningOverdueFlag || wasteOverdueFlag) showToast("Просрочка по дежурству. Штраф 2.0 €", "error");
       if (toExpireJobs.length > 0) showToast("Время на выполнение работы истекло", "warn");
     }
 
@@ -1382,6 +1535,7 @@ export default function App() {
       wastes: { toma: {}, valya: {} },
       cleaningTasks: { toma: {}, valya: {} },
       weeklyWinner: winner,
+      adminRequests: [], // Clear admin requests
     }));
     setPayoutConfirm(false);
     showToast(`💸 ВЫПЛАТА ВЫПОЛНЕНА. НАЧИНАЕМ С ЧИСТОГО ЛИСТА!`, "success");
@@ -2066,8 +2220,8 @@ export default function App() {
                 <div style={{ marginTop: 12 }}>
                     <h3 style={{ fontSize: 16, fontWeight: 800, color: "#92400E", marginBottom: 12 }}>⚡ Запросы от детей ({adminRequests.length})</h3>
                     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                        {[...adminRequests].sort((a,b) => (a.status === 'resolved' ? 1 : 0) - (b.status === 'resolved' ? 1 : 0)).map(job => (
-                            <div key={job.id} style={{ background: job.status === 'resolved' ? "#F1F5F9" : "#FFFBEB", border: job.status === 'resolved' ? "1px solid #CBD5E1" : "1px solid #FCD34D", borderRadius: 16, padding: 16 }}>
+                        {[...adminRequests].sort((a,b) => (a.status === 'resolved' ? 1 : 0) - (b.status === 'resolved' ? 1 : 0)).map((job, idx) => (
+                            <div key={`job-admin-${job.id}-${idx}`} style={{ background: job.status === 'resolved' ? "#F1F5F9" : "#FFFBEB", border: job.status === 'resolved' ? "1px solid #CBD5E1" : "1px solid #FCD34D", borderRadius: 16, padding: 16 }}>
                                 <p style={{ fontWeight: 600, color: job.status === 'resolved' ? "#64748B" : "#78350F", textDecoration: job.status === 'resolved' ? "line-through" : "none" }}>{job.status === 'resolved' && "✅ "}{job.title}</p>
                                 {job.status !== 'resolved' && (
                                     <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
@@ -2086,8 +2240,8 @@ export default function App() {
                 <div style={{ marginTop: 12 }}>
                     <h3 style={{ fontSize: 16, fontWeight: 800, color: "#4F46E5", marginBottom: 12 }}>📤 Мои запросы к маме</h3>
                     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                        {[...adminRequests].filter(j => j.creator === activeUser).sort((a,b) => (a.status === 'resolved' ? 1 : 0) - (b.status === 'resolved' ? 1 : 0)).map(job => (
-                            <div key={job.id} style={{ background: job.status === 'resolved' ? "#F8FAFC" : "#EEF2FF", border: job.status === 'resolved' ? "1px solid #CBD5E1" : "1px solid #C7D2FE", borderRadius: 16, padding: 16 }}>
+                        {[...adminRequests].filter(j => j.creator === activeUser).sort((a,b) => (a.status === 'resolved' ? 1 : 0) - (b.status === 'resolved' ? 1 : 0)).map((job, idx) => (
+                            <div key={`job-user-${job.id}-${idx}`} style={{ background: job.status === 'resolved' ? "#F8FAFC" : "#EEF2FF", border: job.status === 'resolved' ? "1px solid #CBD5E1" : "1px solid #C7D2FE", borderRadius: 16, padding: 16 }}>
                                 <p style={{ fontWeight: 600, color: job.status === 'resolved' ? "#64748B" : "#4338CA", textDecoration: job.status === 'resolved' ? "line-through" : "none" }}>{job.status === 'resolved' && "✅ "}{job.title}</p>
                                 {job.status !== 'resolved' && (
                                     <div style={{ marginTop: 8 }}>
@@ -2141,8 +2295,8 @@ export default function App() {
                 Все системы в норме. Активных багов нет.
               </div>
             ) : (
-              visible.map((bug) => (
-                <div key={bug.id} style={{ ...styles.bugCard, borderLeft: bug.target ? "4px solid #4F46E5" : "4px solid #F59E0B" }}>
+              visible.map((bug, idx) => (
+                <div key={`bug-card-${bug.id}-${idx}`} style={{ ...styles.bugCard, borderLeft: bug.target ? "4px solid #4F46E5" : "4px solid #F59E0B" }}>
                   <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                     <div style={{ flex: 1, minWidth: 200 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
@@ -2290,8 +2444,8 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {closed.slice(-8).reverse().map((bug) => (
-                    <tr key={bug.id} style={styles.tr}>
+                  {closed.slice(-8).reverse().map((bug, idx) => (
+                    <tr key={`bug-row-${bug.id}-${idx}`} style={styles.tr}>
                       <td style={{ ...styles.td, fontWeight: 600, padding: "12px 16px", fontSize: 13 }}>{state.users[bug.target || 'toma']?.name}</td>
                       <td style={{ ...styles.td, padding: "12px 16px", fontSize: 13 }}>{bug.desc.slice(0, 30)}...</td>
                       <td style={{ ...styles.td, padding: "12px 16px" }}>
@@ -2394,13 +2548,13 @@ export default function App() {
               </div>
             </div>
           ) : (
-            activeJobs.map(job => {
+            activeJobs.map((job, idx) => {
                 const isClaimed = job.status !== 'open';
                 const canTake = !isClaimed && activeUser !== "admin" && activeUser !== job.creator && activeUser !== job.forbiddenUser;
                 const timeStr = timeLeft(job.deadline);
                 
                 return (
-                    <div key={job.id} className="job-lot-card" style={{ 
+                    <div key={`job-lot-${job.id}-${idx}`} className="job-lot-card" style={{ 
                         background: "#FFFFFF", 
                         borderRadius: 16, 
                         display: "flex", 
@@ -2660,8 +2814,8 @@ export default function App() {
                     {finishedJobs.length === 0 ? (
                         <p style={{ fontSize: 13, color: "#94A3B8", textAlign: "center", padding: 12 }}>История пуста</p>
                     ) : (
-                        finishedJobs.slice(0, 10).map(job => (
-                            <div key={job.id} style={{ 
+                        finishedJobs.slice(0, 10).map((job, idx) => (
+                            <div key={`job-active-${job.id}-${idx}`} style={{ 
                                 display: "flex", 
                                 justifyContent: "space-between", 
                                 alignItems: "center", 
@@ -3056,6 +3210,7 @@ export default function App() {
         setPayoutConfirm={setPayoutConfirm}
         rejectGym={rejectGym}
         confirmGym={confirmGym}
+        resolveAdminRequest={resolvePenaltyAppeal}
         openBugs={openBugs}
         showToast={showToast}
     />;
@@ -3090,6 +3245,7 @@ export default function App() {
         setPayoutConfirm={setPayoutConfirm}
         rejectGym={rejectGym}
         confirmGym={confirmGym}
+        resolveAdminRequest={resolvePenaltyAppeal}
         openBugs={openBugs}
         showToast={showToast}
     />;

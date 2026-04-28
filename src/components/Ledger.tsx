@@ -26,7 +26,9 @@ export const Ledger = ({ activeUser, isAdmin, state, weeklyExpected, deleteLogEn
       : availableLogs.filter((l) => l.user === filterUser);
 
     const eventLabel: Record<string, string> = {
-      kitchen_late: "Задержка на кухне",
+      kitchen_late: "Кухня (задержка)",
+      waste_late: "Мусор (задержка)",
+      cleaning_late: "Уборка (задержка)",
       gym: "Зал",
       bug_fine: "Штраф",
       expense: "Траты",
@@ -42,9 +44,9 @@ export const Ledger = ({ activeUser, isAdmin, state, weeklyExpected, deleteLogEn
             const usr = state.users[u as 'toma' | 'valya'];
             const uLogs = state.weeklyLog.filter(l => l.user === u);
             const expenses = Math.abs(uLogs.filter(l => l.event === "expense").reduce((acc, l) => acc + l.delta, 0));
-            const fines = Math.abs(uLogs.filter(l => l.event === "kitchen_late" || l.event === "bug_fine").reduce((acc, l) => acc + l.delta, 0));
+            const fines = Math.abs(uLogs.filter(l => ["kitchen_late", "bug_fine", "waste_late", "cleaning_late"].includes(l.event)).reduce((acc, l) => acc + l.delta, 0));
             const earned = uLogs.filter(l => l.event === "job_reward").reduce((acc, l) => acc + l.delta, 0);
-            const profit = earned + usr.gymWallet - expenses - fines;
+            const profit = (usr.balance + (usr.gymWallet || 0)) - 10;
 
             return (
               <div key={u} style={{ ...styles.balanceCard, padding: 20 }}>
@@ -61,6 +63,9 @@ export const Ledger = ({ activeUser, isAdmin, state, weeklyExpected, deleteLogEn
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, padding: "2px 10px", borderRadius: 20, background: earned > 0 ? "#F5F3FF" : "#F8FAFC", color: earned > 0 ? "#7C3AED" : "#94A3B8" }}>💼 Заработано: +{earned.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, padding: "2px 10px", borderRadius: 20, background: expenses > 0 ? "#EFF6FF" : "#F8FAFC", color: expenses > 0 ? "#2563EB" : "#94A3B8" }}>🍬 Траты: -{expenses.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, padding: "2px 10px", borderRadius: 20, background: fines > 0 ? "#FEF2F2" : "#F8FAFC", color: fines > 0 ? "#DC2626" : "#94A3B8" }}>⚠️ Штрафы: -{fines.toFixed(2)} €</span>
+                  {uLogs.some(l => l.event === 'job_payment') && (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, padding: "2px 10px", borderRadius: 20, background: "#FEF9C3", color: "#854D0E" }}>🤝 Оплаты: {uLogs.filter(l => l.event === 'job_payment').reduce((acc, l) => acc + l.delta, 0).toFixed(2)} €</span>
+                  )}
                 </div>
               </div>
             );

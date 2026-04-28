@@ -2,8 +2,23 @@
  * Service to send notifications to Telegram via Bot API
  */
 
-const BOT_TOKEN = ((import.meta as any).env.VITE_TELEGRAM_BOT_TOKEN || '').trim();
-const CHAT_ID = ((import.meta as any).env.VITE_TELEGRAM_CHAT_ID || '').trim();
+const getEnv = (key: string) => {
+  if (typeof process !== 'undefined' && process.env) {
+    if (process.env[key]) return process.env[key];
+    if (process.env[`VITE_${key}`]) return process.env[`VITE_${key}`];
+  }
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env) {
+    // @ts-ignore
+    if (import.meta.env[key]) return import.meta.env[key];
+    // @ts-ignore
+    if (import.meta.env[`VITE_${key}`]) return import.meta.env[`VITE_${key}`];
+  }
+  return '';
+};
+
+const BOT_TOKEN = (getEnv('TELEGRAM_BOT_TOKEN') || '').trim();
+const CHAT_ID = (getEnv('TELEGRAM_CHAT_ID') || '').trim();
 
 export const sendTelegramMessage = async (text: string, replyMarkup?: any): Promise<{success: boolean, error?: string}> => {
   if (!BOT_TOKEN) {

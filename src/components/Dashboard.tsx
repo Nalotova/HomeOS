@@ -24,6 +24,7 @@ interface DashboardProps {
   setPayoutConfirm: (m: any) => void;
   rejectGym: (idx: number) => void;
   confirmGym: (idx: number) => void;
+  resolveAdminRequest: (id: number, approved: boolean) => void;
   openBugs: any[];
   showToast: (msg: string, type?: "info" | "success" | "warn" | "error") => void;
 }
@@ -34,7 +35,7 @@ export const Dashboard = ({
   persist, weeklyExpected, setAdjustModal,
   setJobModal, setRequestTaskModal, setBugModal,
   setSpendModal, setPayoutConfirm, rejectGym,
-  confirmGym, openBugs, showToast
+  confirmGym, resolveAdminRequest, openBugs, showToast
 }: DashboardProps) => {
     const [now, setNow] = useState(new Date());
     useEffect(() => { const timer = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(timer); }, []);
@@ -191,6 +192,37 @@ export const Dashboard = ({
           </div>
         )}
 
+        {isAdmin && state.adminRequests?.some(r => r.status === 'pending') && (
+          <div className="animate-in fade-in slide-in-from-top-2 duration-500" style={{ 
+            background: "#F5F3FF", 
+            padding: "16px 20px", 
+            borderRadius: 20, 
+            border: "2px solid #6366F1",
+            display: "flex",
+            alignItems: "center",
+            gap: 16,
+            marginBottom: 8,
+            boxShadow: "0 4px 12px rgba(99, 102, 241, 0.15)"
+          }}>
+            <div style={{ fontSize: 24 }}>🆘</div>
+            <div style={{ flex: 1 }}>
+              <p style={{ fontSize: 14, fontWeight: 700, color: "#4338CA", marginBottom: 2 }}>ЗАПРОСЫ НА ОТМЕНУ</p>
+              <p style={{ fontSize: 13, color: "#4F46E5", fontWeight: 500 }}>
+                Дети просят отменить штраф. Проверьте обоснованность.
+              </p>
+            </div>
+            <button 
+              onClick={() => {
+                const el = document.getElementById('pending-requests-section');
+                if (el) el.scrollIntoView({ behavior: 'smooth' });
+              }}
+              style={{ fontSize: 12, fontWeight: 700, color: "#4F46E5", textDecoration: "underline", background: "none", border: "none", cursor: "pointer" }}
+            >
+              Смотреть
+            </button>
+          </div>
+        )}
+
         <div style={{ 
             background: greeting.bg, 
             padding: "24px", 
@@ -298,9 +330,10 @@ export const Dashboard = ({
             
             const uLogs = state.weeklyLog.filter(l => l.user === u);
             const expenses = Math.abs(uLogs.filter(l => l.event === "expense").reduce((acc, l) => acc + l.delta, 0));
-            const fines = Math.abs(uLogs.filter(l => l.event === "kitchen_late" || l.event === "bug_fine").reduce((acc, l) => acc + l.delta, 0));
+            const fines = Math.abs(uLogs.filter(l => ["kitchen_late", "bug_fine", "waste_late", "cleaning_late"].includes(l.event)).reduce((acc, l) => acc + l.delta, 0));
             const earned = uLogs.filter(l => l.event === "job_reward").reduce((acc, l) => acc + l.delta, 0);
-            const profit = earned + usr.gymWallet - expenses - fines;
+            const payments = uLogs.filter(l => l.event === "job_payment").reduce((acc, l) => acc + l.delta, 0);
+            const profit = (usr.balance + (usr.gymWallet || 0)) - 10;
             const currentBalance = usr.balance; // Starting 10 + earned - expenses - fines
 
             return (
@@ -317,11 +350,13 @@ export const Dashboard = ({
                   </span>
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", minHeight: 24, marginTop: 12 }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: "#EEF2FF", color: "#4F46E5", cursor: isAdmin ? "pointer" : "default", boxShadow: "0 1px 2px rgba(79, 70, 229, 0.1)" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'balance', title: 'Основной счет (Деньги на руках)'})}>💵 Кошелек: {currentBalance.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: earned > 0 ? "#F5F3FF" : "#F8FAFC", color: earned > 0 ? "#7C3AED" : "#94A3B8", boxShadow: earned > 0 ? "0 1px 2px rgba(124, 58, 237, 0.1)" : "none", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'reward', title: 'Премия/Начисление'})}>💼 Работы: +{earned.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: usr.gymWallet > 0 ? "#ECFDF5" : "#F8FAFC", color: usr.gymWallet > 0 ? "#059669" : "#94A3B8", boxShadow: usr.gymWallet > 0 ? "0 1px 2px rgba(5, 150, 105, 0.1)" : "none", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'gymWallet', title: 'Зал'})}>🏋️ Зал: +{usr.gymWallet.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: expenses > 0 ? "#EFF6FF" : "#F8FAFC", color: expenses > 0 ? "#2563EB" : "#94A3B8", boxShadow: expenses > 0 ? "0 1px 2px rgba(37, 99, 235, 0.1)" : "none", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'expenses', title: 'Траты'})}>🍬 Траты: -{expenses.toFixed(2)} €</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: fines > 0 ? "#FEF2F2" : "#F8FAFC", color: fines > 0 ? "#DC2626" : "#94A3B8", boxShadow: fines > 0 ? "0 1px 2px rgba(220, 38, 38, 0.1)" : "none", cursor: isAdmin ? "pointer" : "default" }} onClick={() => isAdmin && setAdjustModal({user: u as 'toma' | 'valya', type: 'fines', title: 'Штрафы'})}>⚠️ Штрафы: -{fines.toFixed(2)} €</span>
+                  {payments < 0 && (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: "4px 12px", borderRadius: 20, background: "#FEF9C3", color: "#854D0E", boxShadow: "0 1px 2px rgba(133, 77, 14, 0.1)" }}>🤝 Оплаты: {payments.toFixed(2)} €</span>
+                  )}
                   <div style={{ width: "100%", height: "1px", background: "#E2E8F0", margin: "4px 0" }} />
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700, color: "#94A3B8", padding: "2px 4px" }}>🏅 НАКОПЛЕНО ВСЕГО: {usr.totalEarned.toFixed(2)} €</span>
                 </div>
@@ -360,6 +395,40 @@ export const Dashboard = ({
                   </div>
                   <span style={{ fontFamily: "DM Mono", fontSize: 14, fontWeight: 700 }}>{weeklyExpected(u).toFixed(2)} <span style={{ fontSize: 12, color: "#94A3B8" }}>€</span></span>
                 </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {isAdmin && state.adminRequests?.some(r => r.status === 'pending') && (
+          <div id="pending-requests-section" style={styles.section}>
+            <h3 style={styles.sectionTitle}>ЗАПРОСЫ НА ОТМЕНУ ШТРАФОВ</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {state.adminRequests.filter(r => r.status === 'pending').map((req) => (
+                  <div key={req.id} style={{ ...styles.card, padding: 16, borderLeft: "4px solid #6366F1", background: "#F5F3FF" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontWeight: 700, color: "#1E293B" }}>{state.users[req.user].name}</div>
+                        <div style={{ fontSize: 13, color: "#64748B" }}>
+                            Запрос на отмену: <strong>{req.category === 'kitchen' ? 'Кухня' : req.category === 'waste' ? 'Мусор' : 'Уборка'}</strong>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button 
+                          style={{ ...styles.primaryBtn, background: "#EF4444", padding: "8px 16px" }} 
+                          onClick={() => resolveAdminRequest(req.id, false)}
+                        >
+                          Отклонить
+                        </button>
+                        <button 
+                          style={{ ...styles.primaryBtn, background: "#10B981", padding: "8px 16px" }} 
+                          onClick={() => resolveAdminRequest(req.id, true)}
+                        >
+                          Одобрить
+                        </button>
+                      </div>
+                    </div>
+                  </div>
               ))}
             </div>
           </div>

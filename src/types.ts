@@ -51,7 +51,7 @@ export interface Job {
 export interface WeeklyLogEntry {
   date: string;
   user: string;
-  event: 'kitchen_late' | 'gym' | 'bug_fine' | 'expense' | 'base' | 'job_reward' | 'job_payment';
+  event: 'kitchen_late' | 'gym' | 'bug_fine' | 'expense' | 'base' | 'job_reward' | 'job_payment' | 'waste_late' | 'cleaning_late';
   delta: number;
   note?: string;
 }
@@ -61,6 +61,15 @@ export interface Payout {
   date: string;
   toma: number;
   valya: number;
+}
+
+export interface AdminRequest {
+    id: number;
+    user: 'toma' | 'valya';
+    type: 'penalty_cancellation';
+    category: 'kitchen' | 'waste' | 'cleaning';
+    date: string;
+    status: 'pending' | 'approved' | 'rejected';
 }
 
 export interface AppState {
@@ -89,6 +98,7 @@ export interface AppState {
   generalMessage: string | null;
   generalMessageRead?: { toma: boolean; valya: boolean };
   vacationMode?: boolean;
+  adminRequests?: AdminRequest[];
 }
 
 export interface FirestoreErrorInfo {
