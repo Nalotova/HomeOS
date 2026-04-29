@@ -646,14 +646,7 @@ export default function App() {
         });
 
         // --- Recurring Housekeeping Reminders ---
-        
-        // 1. Kitchen
-        if (!state.kitchenDone) {
-            const dutyMan = state.users[state.kitchenDuty]?.name || 'Дежурный';
-            trigger('kitchen-2100', 21, 0, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 90 мин. ✨`);
-            trigger('kitchen-2230-remind', 21, 30, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 60 мин. ✨`);
-            trigger('kitchen-2200', 22, 0, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 30 мин. ✨`);
-        }
+        // REMOVED FROM CLIENT: Server handles reminders autonomously now.
 
         // 2. Waste (Tue, Fri 18:00)
         if (day === 2 || day === 5) {
@@ -745,7 +738,7 @@ export default function App() {
           ...s.users,
           [u]: { ...s.users[u], balance: s.users[u].balance - 2.0 },
         },
-        weeklyLog: [...s.weeklyLog, { date: todayISO(), user: u, event: "kitchen_late", delta: -2.0 }],
+        weeklyLog: [...s.weeklyLog, { date: todayISO(), user: u, event: "kitchen_late", delta: -2.0, note: "Дедлайн 22:30" }],
       }));
       showToast("⚠️ Дедлайн пропущен. Штраф -2.0 €", "error");
       sendTelegramMessage(`<b>🔴 Кухня убрана с опозданием!</b>\nПользователь: ${userObj.name}\nШтраф: -2.00€`);
