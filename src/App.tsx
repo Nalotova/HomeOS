@@ -651,7 +651,7 @@ export default function App() {
         if (!state.kitchenDone) {
             const dutyMan = state.users[state.kitchenDuty]?.name || 'Дежурный';
             trigger('kitchen-2100', 21, 0, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 90 мин. ✨`);
-            trigger('kitchen-2130', 21, 30, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 60 мин. ✨`);
+            trigger('kitchen-2230-remind', 21, 30, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 60 мин. ✨`);
             trigger('kitchen-2200', 22, 0, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 30 мин. ✨`);
         }
 
@@ -1184,7 +1184,7 @@ export default function App() {
     const isDuty = state.kitchenDuty === activeUser;
     const taskState = state.kitchenTasks || { "Посудомойка": false, "Столы": false, "Плита": false };
     const tasks = Object.keys(taskState)
-      .filter(k => !['escalated_2230', 'escalated_0800', 'overdue_migrated'].includes(k))
+      .filter(k => !['escalated_2230', 'escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
       .sort((a, b) => (taskState[a] ? 1 : 0) - (taskState[b] ? 1 : 0));
     const [newTaskTitle, setNewTaskTitle] = useState("");
     const [newWasteTask, setNewWasteTask] = useState<{ user: "toma" | "valya", title: string } | null>(null);
@@ -1268,7 +1268,7 @@ export default function App() {
     const usersToShowWaste = isAdmin ? ["toma", "valya"] : 
                              (activeUser === "toma" || activeUser === "valya") ? [activeUser] : [];
 
-    const techKeys = ['escalated_2230', 'escalated_0800', 'overdue_migrated'];
+    const techKeys = ['escalated_2230', 'escalated_2130', 'escalated_0800', 'overdue_migrated'];
     
     const wasteDone = state.wasteDone || { toma: false, valya: false };
     const hasAnyWasteTasks = usersToShowWaste.some(u => 
@@ -1429,7 +1429,7 @@ export default function App() {
                         {usersToShowWaste.map(u => {
                             const uTasks = state.wastes[u] || {};
                             const taskNames = Object.keys(uTasks)
-                                .filter(k => !['escalated_2230', 'escalated_0800', 'overdue_migrated'].includes(k))
+                                .filter(k => !['escalated_2230', 'escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
                                 .sort((a, b) => (uTasks[a] ? 1 : 0) - (uTasks[b] ? 1 : 0));
                             
                             return (
@@ -1631,7 +1631,7 @@ export default function App() {
                         {usersToShowWaste.map(u => {
                             const uTasks = state.cleaningTasks[u] || {};
                             const taskNames = Object.keys(uTasks)
-                                .filter(k => !['escalated_2230', 'escalated_0800', 'overdue_migrated'].includes(k))
+                                .filter(k => !['escalated_2230', 'escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
                                 .sort((a, b) => (uTasks[a] ? 1 : 0) - (uTasks[b] ? 1 : 0));
                             
                             return (

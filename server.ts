@@ -224,9 +224,15 @@ async function startServer() {
       if (!nextState.kitchenDone) {
         const dutyMan = nextState.users[nextState.kitchenDuty]?.name || 'Дежурный';
         
-        if (triggerReminder('kitchen-2100', 21, 0, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 90 мин. ✨`)) stateChanged = true;
-        if (triggerReminder('kitchen-2130', 21, 30, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 60 мин. ✨`)) stateChanged = true;
-        if (triggerReminder('kitchen-2200', 22, 0, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 30 мин. ✨`)) stateChanged = true;
+        // Cleanup old stale keys if found
+        if (nextState.kitchenTasks?.["escalated_2130"]) {
+            delete nextState.kitchenTasks["escalated_2130"];
+            stateChanged = true;
+        }
+
+        if (triggerReminder('remind-kitchen-2100', 21, 0, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 90 мин. ✨`)) stateChanged = true;
+        if (triggerReminder('remind-kitchen-2130', 21, 30, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 60 мин. ✨`)) stateChanged = true;
+        if (triggerReminder('remind-kitchen-2200', 22, 0, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 30 мин. ✨`)) stateChanged = true;
 
         const deadline2230 = new Date(todayDate); deadline2230.setHours(22, 30, 0, 0);
         const deadline0800 = new Date(todayDate); deadline0800.setDate(deadline0800.getDate() + 1); deadline0800.setHours(8, 0, 0, 0);
