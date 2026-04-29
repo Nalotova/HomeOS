@@ -99,6 +99,7 @@ export interface AppState {
   generalMessageRead?: { toma: boolean; valya: boolean };
   vacationMode?: boolean;
   adminRequests?: AdminRequest[];
+  notificationsSent?: string[];
 }
 
 export interface FirestoreErrorInfo {

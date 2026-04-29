@@ -81,10 +81,10 @@ const defaultState = (): AppState => {
   monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
   monday.setHours(0, 0, 0, 0);
 
-  const deadline2130 = new Date(); deadline2130.setHours(21, 30, 0, 0);
+  const deadline2230 = new Date(); deadline2230.setHours(22, 30, 0, 0);
   const deadline0800 = new Date(); deadline0800.setDate(deadline0800.getDate() + 1); deadline0800.setHours(8, 0, 0, 0);
   
-  const isAfter2130 = nowTime > deadline2130.getTime();
+  const isAfter2230 = nowTime > deadline2230.getTime();
   const isAfter0800 = nowTime > deadline0800.getTime();
 
   return {
@@ -99,7 +99,7 @@ const defaultState = (): AppState => {
       "Посудомойка": false, 
       "Столы": false, 
       "Плита": false,
-      ...(isAfter2130 ? { escalated_2130: true } : {}),
+      ...(isAfter2230 ? { escalated_2230: true } : {}),
       ...(isAfter0800 ? { escalated_0800: true } : {}),
       overdue_migrated: true 
     },
@@ -258,7 +258,7 @@ export default function App() {
       if (type === 'kitchen') {
         nextKitchenDone = true;
         const kt = { ...s.kitchenTasks };
-        delete kt['escalated_2130'];
+        delete kt['escalated_2230'];
         delete kt['escalated_0800'];
         delete kt['overdue_migrated'];
         nextKitchenTasks = kt;
@@ -582,9 +582,26 @@ export default function App() {
     try {
         const now = Date.now();
         const thirtyMins = 30 * 60 * 1000;
-        const todayStr = today();
         const todayISODate = todayISO();
         const day = new Date().getDay();
+        const h = new Date().getHours();
+        const m = new Date().getMinutes();
+        
+        const sent = state.notificationsSent || [];
+        const dayPrefix = `remind-${todayISODate}-`;
+        
+        const trigger = (tagSuffix: string, targetH: number, targetM: number, message: string) => {
+            const tag = dayPrefix + tagSuffix;
+            if ((h > targetH || (h === targetH && m >= targetM)) && !sent.includes(tag)) {
+                sendTelegramMessage(message);
+                persist(s => ({
+                  ...s,
+                  notificationsSent: [...(s.notificationsSent || []), tag]
+                }));
+                return true;
+            }
+            return false;
+        };
 
         // Check Bugs
         state.bugs.forEach(bug => {
@@ -594,7 +611,6 @@ export default function App() {
                 const tag = `deadline-bug-${bug.id}`;
 
                 if (timeUntil > 0 && timeUntil <= thirtyMins && !notifiedDeadlines.current.has(tag)) {
-                    // Local Browser Notification only for target
                     if (bug.target === activeUser && notificationPermission === "granted") {
                         new Notification("⏰ Время истекает!", {
                             body: `Осталось 30 минут, чтобы исправить баг: ${bug.desc}`,
@@ -602,7 +618,6 @@ export default function App() {
                             tag
                         });
                     }
-                    // Telegram for everyone (but only if anyone with app open catches it)
                     sendTelegramMessage(`<b>⏰ Напоминание: БАГ!</b>\nДля: ${bug.target ? state.users[bug.target].name : 'Всех'}\nОсталось 30 минут:\n${bug.desc}`);
                     notifiedDeadlines.current.add(tag);
                 }
@@ -632,463 +647,78 @@ export default function App() {
 
         // --- Recurring Housekeeping Reminders ---
         
-        // 1. Kitchen (Daily 22:30)
+        // 1. Kitchen
         if (!state.kitchenDone) {
-            const kitchenDeadline = new Date();
-            kitchenDeadline.setHours(22, 30, 0, 0);
-            const h = new Date().getHours();
-            const m = new Date().getMinutes();
-            
-            if ((h === 21 && (m === 0 || m === 30)) || (h === 22 && m === 0)) {
-                const tag = `remind-kitchen-${todayISODate}-${h}-${m}`;
-                if (!notifiedDeadlines.current.has(tag)) {
-                    sendTelegramMessage(`<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${state.users[state.kitchenDuty].name}\nДо дедлайна (22:30) осталось ${Math.round((kitchenDeadline.getTime() - now)/60000)} мин. Пора наводить порядок! ✨`);
-                    notifiedDeadlines.current.add(tag);
-                }
-            }
+            const dutyMan = state.users[state.kitchenDuty]?.name || 'Дежурный';
+            trigger('kitchen-2100', 21, 0, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 90 мин. ✨`);
+            trigger('kitchen-2130', 21, 30, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 60 мин. ✨`);
+            trigger('kitchen-2200', 22, 0, `<b>🧼 Кухня: Напоминание!</b>\nДежурный: ${dutyMan}\nДо дедлайна (22:30) осталось 30 мин. ✨`);
         }
 
         // 2. Waste (Tue, Fri 18:00)
         if (day === 2 || day === 5) {
-            const wasteDeadline = new Date();
-            wasteDeadline.setHours(18, 0, 0, 0);
-            const timeUntil = wasteDeadline.getTime() - now;
-            
             ['toma', 'valya'].forEach(u => {
                 const userKey = u as 'toma' | 'valya';
                 const tasks = state.wastes[userKey] || {};
-                const hasIncomplete = Object.keys(tasks).filter(k => k.includes('waste')).some(k => !tasks[k]);
+                const hasIncomplete = Object.keys(tasks).filter(k => k.includes('waste') || k !== 'overdue_migrated').some(k => !tasks[k]);
                 
                 if (hasIncomplete && !state.wasteDone?.[userKey]) {
-                    const h = new Date().getHours();
-                    const m = new Date().getMinutes();
-                    if (h === 17 && (m === 0 || m === 30)) {
-                        const tag = `remind-waste-${todayISODate}-${userKey}-${h}-${m}`;
-                        if (!notifiedDeadlines.current.has(tag)) {
-                            sendTelegramMessage(`<b>🚛 Мусор: Напоминание!</b>\nДля: ${state.users[userKey].name}\nДо 18:00 осталось ${m === 0 ? '60' : '30'} минут. Выноси пакеты! 🚮`);
-                            notifiedDeadlines.current.add(tag);
-                        }
-                    }
+                    trigger(`waste-${u}-1700`, 17, 0, `<b>🚛 Мусор: Напоминание!</b>\nДля: ${state.users[userKey].name}\nДедлайн в 18:00. Выноси пакеты! 🚮`);
+                    trigger(`waste-${u}-1730`, 17, 30, `<b>🚛 Мусор: Пора!</b>\nДля: ${state.users[userKey].name}\nОсталось 30 минут до дедлайна (18:00)! 🚮`);
                 }
             });
         }
 
         // 3. House Cleaning (Fri 18:00)
         if (day === 5) {
-            const cleaningDeadline = new Date();
-            cleaningDeadline.setHours(18, 0, 0, 0);
-            const timeUntil = cleaningDeadline.getTime() - now;
-
             ['toma', 'valya'].forEach(u => {
                 const userKey = u as 'toma' | 'valya';
                 const tasks = state.cleaningTasks[userKey] || {};
                 const hasIncomplete = Object.keys(tasks).some(k => !tasks[k]);
                 
                 if (hasIncomplete && !state.cleaningDone?.[userKey]) {
-                    const h = new Date().getHours();
-                    const m = new Date().getMinutes();
-                    if ((h === 15 || h === 17) && m < 5) {
-                        const tag = `remind-cleaning-${todayISODate}-${userKey}-${h}`;
-                        if (!notifiedDeadlines.current.has(tag)) {
-                            sendTelegramMessage(`<b>🧹 Уборка: Напоминание!</b>\n${state.users[userKey].name}, пора делать уборку. Дедлайн в 18:00! 💪`);
-                            notifiedDeadlines.current.add(tag);
-                        }
-                    }
+                    trigger(`clean-${u}-1500`, 15, 0, `<b>🧹 Уборка: Напоминание!</b>\n${state.users[userKey].name}, сегодня пятница! Пора заняться уборкой. Дедлайн 18:00! 💪`);
+                    trigger(`clean-${u}-1700`, 17, 0, `<b>🧹 Уборка: Финишная прямая!</b>\n${state.users[userKey].name}, остался час до дедлайна уборки! 💪`);
                 }
             });
         }
-
     } catch (e) {
-        console.warn("Deadline notification failed", e);
+        console.warn("Deadline Check error", e);
     }
-  }, [tick, state.bugs, state.jobs, state.kitchenDone, state.kitchenDuty, state.wasteDone, state.cleaningDone, activeUser, hasSynced, notificationPermission]);
+  }, [tick, state.bugs, state.jobs, state.vacationMode, hasSynced, state.notificationsSent]);
 
-   useEffect(() => {
-    if (!hasSynced) return;
-    // Migrate old names to new ones if they exist in state
-    if (state.users.toma && state.users.toma.name === "Тома") {
-      persist(s => ({
-        ...s,
-        users: { ...s.users, toma: { ...s.users.toma, name: "Томочка" } }
-      }));
-    }
-    if (state.users.valya && state.users.valya.name === "Валя") {
-      persist(s => ({
-        ...s,
-        users: { ...s.users, valya: { ...s.users.valya, name: "Валечка" } }
-      }));
-    }
-  }, [state.users.toma?.name, state.users.valya?.name, persist, hasSynced]);
-
-  useEffect(() => {
-    if (!hasSynced || state.vacationMode) return;
-    const todayStr = today();
-    const now = new Date();
-    const day = now.getDay();
-    const isFirstOfMonth = now.getDate() === 1;
-    const currentMonthKey = `${now.getFullYear()}-${now.getMonth()}`;
-    const expectedDuty = (day % 2 === 1) ? "toma" : "valya";
-    const standardKeys = ["Plastik", "Bio", "Papier", "Restmuell", "plastik", "restmuell", "Пластик", "Био", "Бумага", "Черный"];
-    
-    const needsKitchenRotation = state.lastKitchenRotation !== todayStr || state.kitchenDuty !== expectedDuty;
-    const needsMonthlyRotation = isFirstOfMonth && state.lastMonthlyRotation !== currentMonthKey;
-
-    if (needsKitchenRotation || needsMonthlyRotation) {
-      persist((s) => {
-        const isNewDay = s.lastKitchenRotation !== todayStr;
-        let nextWastes = { ...s.wastes };
-        let nextMonthlyZones = { ...s.monthlyZones };
-        let nextCleaningTasks = { ...s.cleaningTasks };
-        let nextCleaningDone = { ...s.cleaningDone };
-
-        if (isNewDay) {
-          // Generate new daily waste tasks
-          let wasteTasks: Record<string, Record<string, boolean>> = { toma: {}, valya: {} };
-          const weekNum = Math.floor(new Date(s.week).getTime() / (7 * 24 * 60 * 60 * 1000));
-          const swap = weekNum % 2 !== 0;
-
-          if (day === 2) {
-            if (!swap) { wasteTasks.toma["Plastik"] = false; wasteTasks.valya["Bio"] = false; }
-            else { wasteTasks.toma["Bio"] = false; wasteTasks.valya["Plastik"] = false; }
-          } else if (day === 5) {
-            if (!swap) { 
-              wasteTasks.toma["Bio"] = false; wasteTasks.toma["Papier"] = false; 
-              wasteTasks.valya["Plastik"] = false; wasteTasks.valya["Restmuell"] = false; 
-            } else {
-              wasteTasks.toma["Plastik"] = false; wasteTasks.toma["Restmuell"] = false; 
-              wasteTasks.valya["Bio"] = false; wasteTasks.valya["Papier"] = false; 
-            }
-          }
-          nextWastes = wasteTasks;
-          
-          // Generate Friday Cleaning Tasks
-          if (day === 5) {
-            const bathroomTasks = { 
-                "Вымыть ванную": false, 
-                "Вымыть раковину в ванной": false, 
-                "Навести порядок в ванной": false, 
-                "Уборка своих территорий": false 
-            };
-            const toiletTasks = { 
-                "Вымыть раковину в туалете": false, 
-                "Вымыть унитаз": false, 
-                "Вымыть пол в туалете": false, 
-                "Уборка своих территорий": false 
-            };
-            
-            nextCleaningTasks = {
-              toma: s.monthlyZones.toma === "Bad" ? bathroomTasks : toiletTasks,
-              valya: s.monthlyZones.valya === "Bad" ? bathroomTasks : toiletTasks
-            };
-            nextCleaningDone = { toma: false, valya: false };
-          } else if (day === 1) {
-            // Clear on Monday
-            nextCleaningTasks = { toma: {}, valya: {} };
-            nextCleaningDone = { toma: false, valya: false };
-          }
-        } else if (![2, 5].includes(day)) {
-          // Surgical cleanup of standard tasks on non-waste days
-          ['toma', 'valya'].forEach(u => {
-            const uTasks = { ...(nextWastes[u] || {}) };
-            let changed = false;
-            Object.keys(uTasks).forEach(k => {
-              if (standardKeys.includes(k)) {
-                delete uTasks[k];
-                changed = true;
-              }
-            });
-            if (changed) nextWastes[u] = uTasks;
-          });
-        }
-
-        // Monthly Exchange on the 1st
-        if (needsMonthlyRotation) {
-          nextMonthlyZones = { toma: s.monthlyZones.valya, valya: s.monthlyZones.toma };
-        }
-
-        return {
-          ...s,
-          kitchenDuty: expectedDuty,
-          kitchenDone: isNewDay ? false : s.kitchenDone,
-          kitchenTasks: isNewDay ? { "Посудомойка": false, "Столы": false, "Плита": false } : s.kitchenTasks,
-          kitchenDeadline: isNewDay ? null : s.kitchenDeadline,
-          lastKitchenRotation: todayStr,
-          lastMonthlyRotation: currentMonthKey,
-          monthlyZones: nextMonthlyZones,
-          wastes: nextWastes,
-          wasteDone: isNewDay ? { toma: false, valya: false } : (s.wasteDone || { toma: false, valya: false }),
-          cleaningTasks: nextCleaningTasks,
-          cleaningDone: nextCleaningDone
-        };
-      });
-    }
-  }, [state.lastKitchenRotation, state.kitchenDuty, state.lastMonthlyRotation, hasSynced, state.vacationMode, persist]);
-
+  // --- Rescue Deadline Checks ---
   useEffect(() => {
     if (!hasSynced || state.vacationMode) return;
     const now = Date.now();
-    
-    // Kitchen Penalties
-    if (!state.kitchenDone) {
-      const deadline2130 = new Date(); deadline2130.setHours(21, 30, 0, 0);
-      const deadline0800 = new Date(); deadline0800.setDate(deadline0800.getDate() + 1); deadline0800.setHours(8, 0, 0, 0);
-      
-      const dutyUser = state.kitchenDuty;
-      const otherUser = dutyUser === "toma" ? "valya" : "toma";
-
-      // 21:30 Penalty
-      if (now > deadline2130.getTime() && !state.kitchenTasks["escalated_2130"]) {
-        persist((s) => ({
-          ...s,
-          kitchenTasks: { ...s.kitchenTasks, escalated_2130: true },
-          users: { ...s.users, [dutyUser]: { ...s.users[dutyUser], balance: s.users[dutyUser].balance - 2.0 } },
-          weeklyLog: [...s.weeklyLog, { date: todayISO(), user: dutyUser, event: "kitchen_late", delta: -2.0, note: "Дедлайн 21:30" }],
-          jobs: [...s.jobs, { 
-            id: Date.now(), 
-            creator: dutyUser, 
-            title: "Помыть кухню вместо " + s.users[dutyUser].name, 
-            reward: 2, 
-            deadline: deadline0800.toISOString(),
-            status: 'open',
-            assignee: null,
-            created: todayISO()
-          }]
-        }));
-        showToast(`⚠️ Дедлайн 21:30 пропущен. Штраф -2.0 € для ${state.users[dutyUser].name}`, "error");
-        sendTelegramMessage(`<b>⚠️ Дедлайн 21:30 пропущен!</b>\nПользователь: ${state.users[dutyUser].name}\nШтраф: -2.00€\nЗадача выставлена на Биржу.`);
-      }
-
-      // 08:00 Penalty
-      if (now > deadline0800.getTime() && !state.kitchenDone && !state.kitchenTasks["escalated_0800"]) {
-        persist((s) => ({
-          ...s,
-          kitchenTasks: { ...s.kitchenTasks, escalated_0800: true },
-          users: { ...s.users, [dutyUser]: { ...s.users[dutyUser], balance: s.users[dutyUser].balance - 2.0 } },
-          weeklyLog: [...s.weeklyLog, { date: todayISO(), user: dutyUser, event: "kitchen_late", delta: -2.0, note: "Дедлайн 08:00" }],
-          kitchenDone: true 
-        }));
-        showToast("⚠️ Кухня не убрана к утру. Штраф -2.0 €. Админ убирает.", "error");
-        sendTelegramMessage(`<b>🔴 Кухня НЕ убрана к утру!</b>\nПользователь: ${state.users[dutyUser].name}\nШтраф: -2.00€\nРабота закрыта автоматически (убирает Админ).`);
-      }
-    }
-
-    const day = new Date().getDay();
-    const toAutoAssign = state.bugs.filter(b => b.status === 'open' && b.target === null && b.autoAssignAt && new Date(b.autoAssignAt).getTime() < now);
-    const toExpire = state.bugs.filter(b => b.status === 'open' && b.target !== null && new Date(b.deadline).getTime() < now && !b.fined);
-    const toExpireJobs = state.jobs.filter(j => (j.status === 'open' || j.status === 'in_progress') && new Date(j.deadline).getTime() < now);
-
-    // Track overdue housekeeping tasks
-    const kitchenOverdue = !state.kitchenDone && state.kitchenDeadline && new Date(state.kitchenDeadline).getTime() < now;
-    
-    // Waste Overdue (Tue/Fri 18:00)
-    const isWasteDay = (day === 2 || day === 5);
-    const wasteDeadlineTime = new Date();
-    wasteDeadlineTime.setHours(18, 0, 0, 0);
-    const wasteOverdueFlag = isWasteDay && now > wasteDeadlineTime.getTime();
-
-    // Cleaning Overdue (Fri 18:00)
-    const cleaningDeadlineTime = new Date();
-    cleaningDeadlineTime.setHours(18, 0, 0, 0);
-    const cleaningOverdueFlag = (day === 5 || day === 6 || day === 0) && now > cleaningDeadlineTime.getTime();
-
-    const needsKitchenEscalation = kitchenOverdue && !state.kitchenTasks["overdue_migrated"];
-    const needsWasteEscalation = wasteOverdueFlag && (
-        (!state.wasteDone?.toma && !state.wastes.toma?.overdue_migrated) || 
-        (!state.wasteDone?.valya && !state.wastes.valya?.overdue_migrated)
-    );
-    const needsCleaningEscalation = cleaningOverdueFlag && (
-        (!state.cleaningDone?.toma && !state.cleaningTasks.toma?.overdue_migrated) || 
-        (!state.cleaningDone?.valya && !state.cleaningTasks.valya?.overdue_migrated)
-    );
-
-    if (toAutoAssign.length > 0 || toExpire.length > 0 || toExpireJobs.length > 0 || needsKitchenEscalation || needsWasteEscalation || needsCleaningEscalation) {
-      persist((s) => {
-        let nextBugs = [...s.bugs];
-        let nextJobs = [...s.jobs];
-        let nextUsers = { ...s.users };
-        let nextWeeklyLog = [...s.weeklyLog];
-        let nextLastTarget = s.lastBugTarget;
-        let nextKitchenDone = s.kitchenDone;
-        let nextCleaningDone = { ...s.cleaningDone };
-        let nextWasteDone = { ...s.wasteDone };
-
-        toAutoAssign.forEach(bug => {
-          // Auto-assign after 1 hour if no one claimed
-          const target = nextLastTarget === 'toma' ? 'valya' : 'toma';
-          nextBugs = nextBugs.map(b => b.id === bug.id ? { ...b, target } : b);
-          nextLastTarget = target;
-          showToast(`Баг переназначен системе: ${nextBugs.find(b => b.id === bug.id)?.desc.slice(0,10)}...`, "warn");
-        });
-
-        toExpire.forEach(bug => {
-          if (bug.target) {
-            nextBugs = nextBugs.map(b => b.id === bug.id ? { ...b, status: 'expired', fined: true } : b);
-            const fine = bug.fine || 1.0;                
-            
-            const targetUser = nextUsers[bug.target];
-            nextUsers[bug.target] = { ...targetUser, balance: targetUser.balance - fine };
-            nextWeeklyLog.push({ date: todayISO(), user: bug.target, event: 'bug_fine', delta: -fine, note: `Просрочен баг: ${bug.desc.slice(0,10)}...` });
-            sendTelegramMessage(`<b>🐞 Баг просрочен!</b>\nПользователь: ${s.users[bug.target as 'toma'|'valya'].name}\nШтраф: -${fine.toFixed(2)}€\nОписание: ${bug.desc}`);
-          }
-        });
-
-        toExpireJobs.forEach(job => {
-          if (job.assignee) {
-            const failedUser = job.assignee;
-            // Mark original as expired
-            nextJobs = nextJobs.map(j => j.id === job.id ? { ...j, status: 'expired' } : j);
-            
-            // Create "rescue" version
-            nextJobs.push({
-              ...job,
-              id: Date.now() + Math.random(),
-              status: 'open',
-              assignee: null,
-              deadline: new Date(Date.now() + 12 * 3600000).toISOString(), // Soft extension
-              title: `🆘 СПАСЕНИЕ: ${job.title} (от ${s.users[failedUser].name})`,
-              failedUser: failedUser, // Track who failed it
-              forbiddenUser: null, // No one forbidden yet
-              created: todayISO()
-            });
-            sendTelegramMessage(`<b>🚑 Задача просрочена!</b>\n${s.users[failedUser].name} не справился с: ${job.title}\nЛюбой может перехватить ее на Бирже!`);
-          } else {
-             nextJobs = nextJobs.map(j => j.id === job.id ? { ...j, status: 'expired' } : j);
-          }
-        });
-
-        const nextKitchenTasks = { ...s.kitchenTasks };
-        // Housekeeping Overdue Migrations
-        if (kitchenOverdue && !s.kitchenTasks["overdue_migrated"]) {
-            const dutyUser = s.kitchenDuty;
-            const kitchenTaskNames = Object.keys(s.kitchenTasks || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k));
-            
-            if (kitchenTaskNames.length > 0) {
-                const targetUser = nextUsers[dutyUser];
-                nextUsers[dutyUser] = { ...targetUser, balance: targetUser.balance - 2.0 };
-                nextWeeklyLog.push({ date: todayISO(), user: dutyUser, event: 'kitchen_late', delta: -2.0, note: "Просрочка кухни (миграция)" });
-                sendTelegramMessage(`<b>🔥 Просрочка кухни!</b>\nПользователь: ${s.users[dutyUser].name}\nШтраф: -2.00€\nХвосты перенесены на Биржу.`);
-                
-                // Move to market
-                nextJobs.push({
-                    id: Date.now() + Math.floor(Math.random() * 1000) + 1,
-                    creator: 'admin',
-                    title: "КУХНЯ: Хвосты от " + s.users[dutyUser].name,
-                    reward: 2,
-                    deadline: new Date(Date.now() + 2 * 3600000).toISOString(),
-                    status: 'open',
-                    assignee: null,
-                    forbiddenUser: dutyUser,
-                    created: todayISO()
-                });
-            }
-
-            nextKitchenDone = true; 
-            nextKitchenTasks["overdue_migrated"] = true;
-        }
-        
-        let nextCleaningTasks = { ...s.cleaningTasks };
-        if (cleaningOverdueFlag) {
-            Object.keys(s.cleaningDone).forEach(u => {
-                const userU = u as 'toma' | 'valya';
-                if (!s.cleaningDone[userU] && !s.cleaningTasks[userU]?.["overdue_migrated"]) {
-                    const cleaningTaskNames = Object.keys(s.cleaningTasks[userU] || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k));
-                    
-                    if (cleaningTaskNames.length > 0) {
-                        const targetUser = nextUsers[userU];
-                        nextUsers[userU] = { ...targetUser, balance: targetUser.balance - 2.0 };
-                        nextWeeklyLog.push({ date: todayISO(), user: userU, event: 'cleaning_late', delta: -2.0, note: "Просрочка уборки" });
-                        sendTelegramMessage(`<b>🧹 Просрочка уборки!</b>\nПользователь: ${s.users[userU].name}\nШтраф: -2.00€\nЗадача на Бирже.`);
-                        
-                         // Move to market
-                        nextJobs.push({
-                            id: Date.now() + Math.floor(Math.random() * 1000) + 2,
-                            creator: 'admin',
-                            title: "УБОРКА: Хвосты от " + s.users[userU].name,
-                            reward: 2,
-                            deadline: new Date(Date.now() + 4 * 3600000).toISOString(),
-                            status: 'open',
-                            assignee: null,
-                            forbiddenUser: userU,
-                            created: todayISO()
-                        });
-                    }
-
-                    nextCleaningDone[userU] = true;
-                    nextCleaningTasks[userU] = { ...nextCleaningTasks[userU], "overdue_migrated": true };
-                }
-            });
-        }
-
-        // 3. Waste Overdue Escalation
-        let nextWastes = { ...s.wastes };
-        if (wasteOverdueFlag) {
-            ['toma', 'valya'].forEach(u => {
-                const userU = u as 'toma' | 'valya';
-                if (!s.wasteDone?.[userU] && !s.wastes[userU]?.["overdue_migrated"]) {
-                    const wasteTaskNames = Object.keys(s.wastes[userU] || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k));
-                    const hasIncomplete = wasteTaskNames.some(k => !s.wastes[userU][k]);
-
-                    if (hasIncomplete) {
-                        const targetUser = nextUsers[userU];
-                        nextUsers[userU] = { ...targetUser, balance: targetUser.balance - 2.0 };
-                        nextWeeklyLog.push({ date: todayISO(), user: userU, event: 'waste_late', delta: -2.0, note: "Просрочка мусора" });
-                        sendTelegramMessage(`<b>🔥 Просрочка мусора!</b>\nПользователь: ${s.users[userU].name}\nШтраф: -2.00€\nЗадача на Бирже.`);
-                        
-                        nextJobs.push({
-                            id: Date.now() + Math.floor(Math.random() * 1000) + 3,
-                            creator: 'admin',
-                            title: "МУСОР: Хвосты от " + s.users[userU].name,
-                            reward: 2,
-                            deadline: new Date(Date.now() + 2 * 3600000).toISOString(),
-                            status: 'open',
-                            assignee: null,
-                            forbiddenUser: userU,
-                            created: todayISO()
-                        });
-                    }
-
-                    nextWasteDone[userU] = true;
-                    nextWastes[userU] = { ...nextWastes[userU], "overdue_migrated": true };
-                }
-            });
-        }
-
-        return { ...s, bugs: nextBugs, jobs: nextJobs, users: nextUsers, weeklyLog: nextWeeklyLog, lastBugTarget: nextLastTarget, kitchenDone: nextKitchenDone, cleaningDone: nextCleaningDone, wasteDone: nextWasteDone, kitchenTasks: nextKitchenTasks, cleaningTasks: nextCleaningTasks, wastes: nextWastes };
-      });
-      if (toExpire.length > 0) showToast(`Баг просрочен. Штраф ${state.bugs.find(b => toExpire.map(ex => ex.id).includes(b.id))?.fine || 1.0} €`, "error");
-      if (kitchenOverdue || cleaningOverdueFlag || wasteOverdueFlag) showToast("Просрочка по дежурству. Штраф 2.0 €", "error");
-      if (toExpireJobs.length > 0) showToast("Время на выполнение работы истекло", "warn");
-    }
-
-    // --- Rescue Deadline Checks ---
     const rescueExpired = state.jobs.filter(j => 
-      j.status === 'in_progress' && 
-      j.rescueDeadline && 
-      new Date(j.rescueDeadline).getTime() < now
+        j.status === 'in_progress' && 
+        j.rescueDeadline && 
+        new Date(j.rescueDeadline).getTime() < now
     );
 
     if (rescueExpired.length > 0) {
-      persist(s => ({
-        ...s,
-        jobs: s.jobs.map(j => {
-          const expired = rescueExpired.find(re => re.id === j.id);
-          if (expired) {
-            return {
-              ...j,
-              status: 'open',
-              assignee: null,
-              rescueDeadline: undefined,
-              forbiddenUser: j.assignee, // Now they are really forbidden
-            };
-          }
-          return j;
-        })
-      }));
-      rescueExpired.forEach(j => {
-        sendTelegramMessage(`<b>⏰ Время на исправление истекло!</b>\n${state.users[j.assignee!].name} не успел(а) за 2 часа.\nТеперь ${j.assignee === 'toma' ? 'Валечка' : 'Томочка'} может забрать это до 08:00!`);
-      });
+        persist(s => ({
+            ...s,
+            jobs: s.jobs.map(j => {
+                const expired = rescueExpired.find(re => re.id === j.id);
+                if (expired) {
+                    return {
+                        ...j,
+                        status: 'open',
+                        assignee: null,
+                        rescueDeadline: undefined,
+                        forbiddenUser: j.assignee,
+                    };
+                }
+                return j;
+            })
+        }));
+        rescueExpired.forEach(j => {
+            sendTelegramMessage(`<b>⏰ Время на исправление истекло!</b>\n${state.users[j.assignee!].name} не успел(а).\nКто-то другой может забрать задачу!`);
+        });
     }
-  }, [tick, state.bugs, state.jobs, persist]);
+  }, [tick, state.jobs, persist, hasSynced, state.vacationMode]);
 
   const user = activeUser && activeUser !== "admin" ? state.users[activeUser] : null;
 
@@ -1554,7 +1184,7 @@ export default function App() {
     const isDuty = state.kitchenDuty === activeUser;
     const taskState = state.kitchenTasks || { "Посудомойка": false, "Столы": false, "Плита": false };
     const tasks = Object.keys(taskState)
-      .filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
+      .filter(k => !['escalated_2230', 'escalated_0800', 'overdue_migrated'].includes(k))
       .sort((a, b) => (taskState[a] ? 1 : 0) - (taskState[b] ? 1 : 0));
     const [newTaskTitle, setNewTaskTitle] = useState("");
     const [newWasteTask, setNewWasteTask] = useState<{ user: "toma" | "valya", title: string } | null>(null);
@@ -1621,7 +1251,7 @@ export default function App() {
     // Helpers for timers/progress
     const now = new Date();
     const wasteDeadline = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0, 0);
-    const kitchenDeadline = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 21, 30, 0);
+    const kitchenDeadline = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 22, 30, 0);
     const wasteRemaining = Math.max(0, wasteDeadline.getTime() - now.getTime());
     const kitchenRemaining = Math.max(0, kitchenDeadline.getTime() - now.getTime());
 
@@ -1638,7 +1268,7 @@ export default function App() {
     const usersToShowWaste = isAdmin ? ["toma", "valya"] : 
                              (activeUser === "toma" || activeUser === "valya") ? [activeUser] : [];
 
-    const techKeys = ['escalated_2130', 'escalated_0800', 'overdue_migrated'];
+    const techKeys = ['escalated_2230', 'escalated_0800', 'overdue_migrated'];
     
     const wasteDone = state.wasteDone || { toma: false, valya: false };
     const hasAnyWasteTasks = usersToShowWaste.some(u => 
@@ -1730,7 +1360,7 @@ export default function App() {
                                     </div>
                                 )}
 
-                                 <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#EF4444", width: `${Math.min(100, Math.max(0, (new Date().getHours() / 21.5) * 100))}%` }}></div></div>
+                                 <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#EF4444", width: `${Math.min(100, Math.max(0, (new Date().getHours() / 22.5) * 100))}%` }}></div></div>
                                 <div style={{ textAlign: "center", fontSize: 13, color: kitchenRemaining <= 0 ? "#EF4444" : "#64748B", fontWeight: 700, marginTop: 8 }}>
                                     {kitchenRemaining <= 0 ? (
                                         <div style={{ background: "#FEF2F2", padding: "12px", borderRadius: 12, border: "1px solid #FCA5A5" }}>
@@ -1799,7 +1429,7 @@ export default function App() {
                         {usersToShowWaste.map(u => {
                             const uTasks = state.wastes[u] || {};
                             const taskNames = Object.keys(uTasks)
-                                .filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
+                                .filter(k => !['escalated_2230', 'escalated_0800', 'overdue_migrated'].includes(k))
                                 .sort((a, b) => (uTasks[a] ? 1 : 0) - (uTasks[b] ? 1 : 0));
                             
                             return (
@@ -1973,7 +1603,7 @@ export default function App() {
                             );
                         })}
                         
-                        {hasAnyWasteTasks && !usersToShowWaste.every(u => wasteDone[u] || (Object.keys(state.wastes[u] || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k)).length === 0)) && (
+                        {hasAnyWasteTasks && !usersToShowWaste.every(u => wasteDone[u] || (Object.keys(state.wastes[u] || {}).filter(k => !['escalated_2230', 'escalated_0800', 'overdue_migrated'].includes(k)).length === 0)) && (
                             <>
                                 <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#EF4444", width: `${Math.min(100, Math.max(0, ((now.getHours() * 60 + now.getMinutes()) / (18 * 60)) * 100))}%` }}></div></div>
                                 <div style={{ marginTop: 8, fontSize: 13, color: wasteRemaining < (3 * 60 * 60 * 1000) ? "#DC2626" : "#64748B", fontWeight: 700, textAlign: "center" }}>
@@ -2001,7 +1631,7 @@ export default function App() {
                         {usersToShowWaste.map(u => {
                             const uTasks = state.cleaningTasks[u] || {};
                             const taskNames = Object.keys(uTasks)
-                                .filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
+                                .filter(k => !['escalated_2230', 'escalated_0800', 'overdue_migrated'].includes(k))
                                 .sort((a, b) => (uTasks[a] ? 1 : 0) - (uTasks[b] ? 1 : 0));
                             
                             return (
@@ -2169,7 +1799,7 @@ export default function App() {
                             );
                         })}
 
-                        {hasAnyCleaningTasks && !usersToShowWaste.every(u => state.cleaningDone[u] || (Object.keys(state.cleaningTasks[u] || {}).filter(k => !['escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k)).length === 0)) && (
+                        {hasAnyCleaningTasks && !usersToShowWaste.every(u => state.cleaningDone[u] || (Object.keys(state.cleaningTasks[u] || {}).filter(k => !['escalated_2230', 'escalated_0800', 'overdue_migrated'].includes(k)).length === 0)) && (
                             <>
                                 <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#10B981", width: `${Math.min(100, Math.max(0, ((now.getHours() * 60 + now.getMinutes()) / (18 * 60)) * 100))}%` }}></div></div>
                                 <div style={{ marginTop: 8, fontSize: 13, color: cleaningRemaining < (3 * 60 * 60 * 1000) ? "#DC2626" : "#64748B", fontWeight: 700, textAlign: "center" }}>
@@ -2901,6 +2531,35 @@ export default function App() {
             </div>
         )}
         <div style={styles.section}>
+            <h3 style={styles.sectionTitle}>
+              <Bell size={18} style={{ marginRight: 8, verticalAlign: 'middle', display: 'inline' }} />
+              Уведомления
+            </h3>
+            <div style={{ ...styles.card, display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ padding: 12, background: "#EFF6FF", borderRadius: 12, border: "1px solid #DBEAFE" }}>
+                <p style={{ fontSize: 13, color: "#1E40AF", marginBottom: 8 }}>
+                  Проверьте работу Telegram бота. Если настройки верны, вы получите сообщение в общую группу.
+                </p>
+                <button 
+                  onClick={async () => {
+                    const res = await sendTelegramMessage("<b>🔔 Тестовое сообщение</b>\nЕсли вы это видите, значит уведомления работают! ✅");
+                    if (res.success) alert("Успешно отправлено!");
+                    else alert("Ошибка: " + res.error);
+                  }}
+                  style={{ ...styles.primaryBtn, width: '100%', background: "#3B82F6", display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                >
+                  <Sparkles size={16} /> Проверить Telegram
+                </button>
+              </div>
+              <div style={{ fontSize: 12, color: "#64748B", display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <p>Бот: {(import.meta as any).env.VITE_TELEGRAM_BOT_TOKEN ? '✅ Настроен' : '❌ Не настроен'}</p>
+                <p>Чат ID: {(import.meta as any).env.VITE_TELEGRAM_CHAT_ID ? '✅ Настроен' : '❌ Не настроен'}</p>
+                <p>Время устройства: {new Date().toLocaleTimeString()}</p>
+              </div>
+            </div>
+        </div>
+
+        <div style={styles.section}>
           <h3 style={styles.sectionTitle}>Безопасность и PIN-коды</h3>
           <div style={styles.card}>
             {[
@@ -3042,9 +2701,9 @@ export default function App() {
                   <>
                     <button style={{ ...styles.primaryBtn, background: "#EF4444" }} onClick={() => {
                       const nowTime = Date.now();
-                      const deadline2130 = new Date(); deadline2130.setHours(21, 30, 0, 0);
+                      const deadline2230 = new Date(); deadline2230.setHours(22, 30, 0, 0);
                       const deadline0800 = new Date(); deadline0800.setDate(deadline0800.getDate() + 1); deadline0800.setHours(8, 0, 0, 0);
-                      const isAfter2130 = nowTime > deadline2130.getTime();
+                      const isAfter2230 = nowTime > deadline2230.getTime();
                       const isAfter0800 = nowTime > deadline0800.getTime();
                       
                       persist(s => {
@@ -3080,7 +2739,7 @@ export default function App() {
                             "Посудомойка": false, 
                             "Столы": false, 
                             "Плита": false,
-                            ...(isAfter2130 ? { escalated_2130: true } : {}),
+                            ...(isAfter2230 ? { escalated_2230: true } : {}),
                             ...(isAfter0800 ? { escalated_0800: true } : {}),
                             overdue_migrated: true 
                           },
