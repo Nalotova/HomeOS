@@ -328,7 +328,13 @@ export const Dashboard = ({
             const isMine = activeUser === u;
             const isKitchenDuty = state.kitchenDuty === u;
             
-            const uLogs = state.weeklyLog.filter(l => l.user === u);
+            const now = new Date();
+            const monday = new Date(now);
+            monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+            monday.setHours(0, 0, 0, 0);
+            const mondayTime = monday.getTime();
+
+            const uLogs = state.weeklyLog.filter(l => l.user === u && new Date(l.date).getTime() >= mondayTime);
             const expenses = Math.abs(uLogs.filter(l => l.event === "expense").reduce((acc, l) => acc + l.delta, 0));
             const fines = Math.abs(uLogs.filter(l => ["kitchen_late", "bug_fine", "waste_late", "cleaning_late"].includes(l.event)).reduce((acc, l) => acc + l.delta, 0));
             const earned = uLogs.filter(l => l.event === "job_reward").reduce((acc, l) => acc + l.delta, 0);

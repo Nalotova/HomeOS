@@ -15,7 +15,15 @@ export const Ledger = ({ activeUser, isAdmin, state, weeklyExpected, deleteLogEn
     const [filterUser, setFilterUser] = useState<string>("all");
     const [deleteConfirmIdx, setConfirmDeleteIdx] = useState<number | null>(null);
 
-    const keyedLogs = state.weeklyLog.map((log, index) => ({ ...log, originalIdx: index }));
+    const now = new Date();
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+    monday.setHours(0, 0, 0, 0);
+    const mondayTime = monday.getTime();
+
+    const keyedLogs = state.weeklyLog
+      .map((log, index) => ({ ...log, originalIdx: index }))
+      .filter(log => new Date(log.date).getTime() >= mondayTime);
 
     const availableLogs = activeUser && activeUser !== "admin"
       ? keyedLogs.filter((l) => l.user === activeUser)
@@ -42,7 +50,7 @@ export const Ledger = ({ activeUser, isAdmin, state, weeklyExpected, deleteLogEn
         <div style={styles.balanceGrid}>
           {(activeUser && activeUser !== "admin" ? [activeUser] : ["toma", "valya"]).map((u) => {
             const usr = state.users[u as 'toma' | 'valya'];
-            const uLogs = state.weeklyLog.filter(l => l.user === u);
+            const uLogs = state.weeklyLog.filter(l => l.user === u && new Date(l.date).getTime() >= mondayTime);
             const expenses = Math.abs(uLogs.filter(l => l.event === "expense").reduce((acc, l) => acc + l.delta, 0));
             const fines = Math.abs(uLogs.filter(l => ["kitchen_late", "bug_fine", "waste_late", "cleaning_late"].includes(l.event)).reduce((acc, l) => acc + l.delta, 0));
             const earned = uLogs.filter(l => l.event === "job_reward").reduce((acc, l) => acc + l.delta, 0);

@@ -100,6 +100,11 @@ export interface AppState {
   vacationMode?: boolean;
   adminRequests?: AdminRequest[];
   notificationsSent?: string[];
+  serverHeartbeat?: {
+    lastTick: number;
+    lastLocalTime: string;
+    lastLocalDate: string;
+  };
 }
 
 export interface FirestoreErrorInfo {

@@ -582,28 +582,8 @@ export default function App() {
     try {
         const now = Date.now();
         const thirtyMins = 30 * 60 * 1000;
-        const todayISODate = todayISO();
-        const day = new Date().getDay();
-        const h = new Date().getHours();
-        const m = new Date().getMinutes();
         
-        const sent = state.notificationsSent || [];
-        const dayPrefix = `remind-${todayISODate}-`;
-        
-        const trigger = (tagSuffix: string, targetH: number, targetM: number, message: string) => {
-            const tag = dayPrefix + tagSuffix;
-            if ((h > targetH || (h === targetH && m >= targetM)) && !sent.includes(tag)) {
-                sendTelegramMessage(message);
-                persist(s => ({
-                  ...s,
-                  notificationsSent: [...(s.notificationsSent || []), tag]
-                }));
-                return true;
-            }
-            return false;
-        };
-
-        // Check Bugs
+        // Check Bugs (Browser notifications only)
         state.bugs.forEach(bug => {
             if (bug.status === 'open') {
                 const deadline = new Date(bug.deadline).getTime();
@@ -618,13 +598,12 @@ export default function App() {
                             tag
                         });
                     }
-                    sendTelegramMessage(`<b>⏰ Напоминание: БАГ!</b>\nДля: ${bug.target ? state.users[bug.target].name : 'Всех'}\nОсталось 30 минут:\n${bug.desc}`);
                     notifiedDeadlines.current.add(tag);
                 }
             }
         });
 
-        // Check Jobs
+        // Check Jobs (Browser notifications only)
         state.jobs.forEach(job => {
             if (job.status === 'in_progress') {
                 const deadline = new Date(job.deadline).getTime();
@@ -639,48 +618,19 @@ export default function App() {
                             tag
                         });
                     }
-                    sendTelegramMessage(`<b>⏳ Дедлайн на Бирже!</b>\nИсполнитель: ${job.assignee ? state.users[job.assignee].name : '?'}\nОсталось 30 минут:\n${job.title}`);
                     notifiedDeadlines.current.add(tag);
                 }
             }
         });
 
-        // --- Recurring Housekeeping Reminders ---
-        // REMOVED FROM CLIENT: Server handles reminders autonomously now.
-
-        // 2. Waste (Tue, Fri 18:00)
-        if (day === 2 || day === 5) {
-            ['toma', 'valya'].forEach(u => {
-                const userKey = u as 'toma' | 'valya';
-                const tasks = state.wastes[userKey] || {};
-                const hasIncomplete = Object.keys(tasks).filter(k => k.includes('waste') || k !== 'overdue_migrated').some(k => !tasks[k]);
-                
-                if (hasIncomplete && !state.wasteDone?.[userKey]) {
-                    trigger(`waste-${u}-1700`, 17, 0, `<b>🚛 Мусор: Напоминание!</b>\nДля: ${state.users[userKey].name}\nДедлайн в 18:00. Выноси пакеты! 🚮`);
-                    trigger(`waste-${u}-1730`, 17, 30, `<b>🚛 Мусор: Пора!</b>\nДля: ${state.users[userKey].name}\nОсталось 30 минут до дедлайна (18:00)! 🚮`);
-                }
-            });
-        }
-
-        // 3. House Cleaning (Fri 18:00)
-        if (day === 5) {
-            ['toma', 'valya'].forEach(u => {
-                const userKey = u as 'toma' | 'valya';
-                const tasks = state.cleaningTasks[userKey] || {};
-                const hasIncomplete = Object.keys(tasks).some(k => !tasks[k]);
-                
-                if (hasIncomplete && !state.cleaningDone?.[userKey]) {
-                    trigger(`clean-${u}-1500`, 15, 0, `<b>🧹 Уборка: Напоминание!</b>\n${state.users[userKey].name}, сегодня пятница! Пора заняться уборкой. Дедлайн 18:00! 💪`);
-                    trigger(`clean-${u}-1700`, 17, 0, `<b>🧹 Уборка: Финишная прямая!</b>\n${state.users[userKey].name}, остался час до дедлайна уборки! 💪`);
-                }
-            });
-        }
+        // REMOVED FROM CLIENT: Waste, Cleaning and Kitchen reminders/updates. 
+        // Server handles all automated notifications and penalties via server.ts.
     } catch (e) {
         console.warn("Deadline Check error", e);
     }
-  }, [tick, state.bugs, state.jobs, state.vacationMode, hasSynced, state.notificationsSent]);
+  }, [tick, state.bugs, state.jobs, state.vacationMode, hasSynced]);
 
-  // --- Rescue Deadline Checks ---
+  // --- Rescue Deadline Checks (Browser info only, server handles Telegram/State) ---
   useEffect(() => {
     if (!hasSynced || state.vacationMode) return;
     const now = Date.now();
@@ -691,27 +641,11 @@ export default function App() {
     );
 
     if (rescueExpired.length > 0) {
-        persist(s => ({
-            ...s,
-            jobs: s.jobs.map(j => {
-                const expired = rescueExpired.find(re => re.id === j.id);
-                if (expired) {
-                    return {
-                        ...j,
-                        status: 'open',
-                        assignee: null,
-                        rescueDeadline: undefined,
-                        forbiddenUser: j.assignee,
-                    };
-                }
-                return j;
-            })
-        }));
-        rescueExpired.forEach(j => {
-            sendTelegramMessage(`<b>⏰ Время на исправление истекло!</b>\n${state.users[j.assignee!].name} не успел(а).\nКто-то другой может забрать задачу!`);
-        });
+        // We only log to console here because server.ts performs the actual state update.
+        // This prevents multiple clients from competing to update the state.
+        console.log("Rescue period expired for jobs:", rescueExpired.map(j => j.id));
     }
-  }, [tick, state.jobs, persist, hasSynced, state.vacationMode]);
+  }, [tick, state.jobs, hasSynced, state.vacationMode]);
 
   const user = activeUser && activeUser !== "admin" ? state.users[activeUser] : null;
 
@@ -3087,6 +3021,15 @@ export default function App() {
               <h1 style={styles.headerTitle}>
                 {isMobile ? "HomeOS" : (view === "dashboard" ? "Обзор" : view === "judge" ? "Баги" : view === "ledger" ? "Ledger" : "Выплата")}
                 {isMobile && <span style={{ marginLeft: 8, fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>v{APP_VERSION}</span>}
+                <span style={{ 
+                  marginLeft: 8, 
+                  width: 8, 
+                  height: 8, 
+                  borderRadius: "50%", 
+                  background: (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 120000)) ? "#10B981" : "#EF4444", 
+                  display: "inline-block",
+                  boxShadow: (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 120000)) ? "0 0 8px #10B98188" : "none"
+                }} title={state.serverHeartbeat ? `Сервер: ${state.serverHeartbeat.lastLocalTime} (+2h offset resolved)` : "Сервер не в сети"} />
               </h1>
             </div>
             <div style={styles.headerRight}>
