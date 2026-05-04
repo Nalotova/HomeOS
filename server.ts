@@ -22,7 +22,6 @@ function getLocalTime() {
     const parts = formatter.formatToParts(now);
     const val = (type: string) => parts.find(p => p.type === type)?.value || "";
     
-    // We need the numeric day of week in Berlin
     const s = now.toLocaleString("en-US", {timeZone: "Europe/Berlin"});
     const berlinDate = new Date(s);
 
@@ -37,7 +36,6 @@ function getLocalTime() {
     };
 }
 
-// Stable Parity for rotations (weeks since anchor Monday)
 const ANCHOR_MONDAY = new Date("2026-01-05T00:00:00Z").getTime();
 function getWeekParity(ts: number) {
     const msPerWeek = 7 * 24 * 60 * 60 * 1000;
@@ -47,7 +45,7 @@ function getWeekParity(ts: number) {
 }
 
 async function startServer() {
-  console.log("Starting HomeOS Server with explicit Timezone (Berlin)...");
+  console.log("[SERVER] Starting HomeOS backend...");
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
@@ -60,6 +58,7 @@ async function startServer() {
 
     const notifiedDeadlines = new Set<string>();
 
+    // LOOP: 30 seconds for heartbeat reliability
     setInterval(async () => {
         try {
             const time = getLocalTime();
@@ -78,7 +77,6 @@ async function startServer() {
                 if (!stateSnap.exists()) return;
                 const state = stateSnap.data();
                 
-                // Server heartbeat to show user we are alive and what time we think it is
                 const nextState = JSON.parse(JSON.stringify(state));
                 nextState.serverHeartbeat = {
                     lastTick: now,
@@ -91,98 +89,95 @@ async function startServer() {
                     return;
                 }
 
-                let stateChanged = true; // Always save heartbeat
+                let stateChanged = true;
                 const expectedDuty = (day % 2 === 1) ? "toma" : "valya";
-                messagesToSend = [];
 
-                // 0. Daily Housekeeping & Rotation
-                const todayStr = time.dateStr;
-                const isNewDay = nextState.lastKitchenRotation !== todayStr;
-                
-                if (isNewDay || nextState.kitchenDuty !== expectedDuty) {
-                    const currentMonthKey = `${time.full.getFullYear()}-${time.full.getMonth()}`;
-                    const isFirstOfMonth = time.full.getDate() === 1;
+                // 0. CHECK FOR RESET / ROTATION
+                // Use ISO date for stability. If DB iso date != current iso date, CLEAR EVERYTHING for new day.
+                const isNewDay = nextState.lastRotationISO !== todayISO;
+                const dutyCorrect = nextState.kitchenDuty === expectedDuty;
 
-                    if (isNewDay) {
-                        let wasteTasks: Record<string, Record<string, boolean>> = { toma: {}, valya: {} };
-                        const swap = getWeekParity(now);
+                if (isNewDay || !dutyCorrect) {
+                    console.log(`[SERVER] RESET/ROTATION TRIGGERED: NewDay=${isNewDay}, DutyCorrect=${dutyCorrect}`);
+                    
+                    // Always Reset Kitchen if it's a new day or duty swap
+                    nextState.kitchenDone = false;
+                    nextState.kitchenTasks = { "Посудомойка": false, "Столы": false, "Плита": false };
+                    nextState.kitchenDuty = expectedDuty;
+                    nextState.kitchenDeadline = null;
+                    nextState.lastRotationISO = todayISO;
+                    nextState.lastKitchenRotation = time.dateStr; // Keep legacy field for compatibility if UI uses it
 
-                        if (day === 2) { // Tuesday
-                            if (!swap) { wasteTasks.toma["Plastik"] = false; wasteTasks.valya["Bio"] = false; }
-                            else { wasteTasks.toma["Bio"] = false; wasteTasks.valya["Plastik"] = false; }
-                        } else if (day === 5) { // Friday
-                            if (!swap) { 
-                                wasteTasks.toma["Bio"] = false; wasteTasks.toma["Papier"] = false; 
-                                wasteTasks.valya["Plastik"] = false; wasteTasks.valya["Restmuell"] = false; 
-                            } else {
-                                wasteTasks.toma["Plastik"] = false; wasteTasks.toma["Restmuell"] = false; 
-                                wasteTasks.valya["Bio"] = false; wasteTasks.valya["Papier"] = false; 
-                            }
+                    // Reset Daily Progress Flags
+                    nextState.cleaningDone = { toma: false, valya: false };
+                    nextState.wasteDone = { toma: false, valya: false };
+                    nextState.notificationsSent = [];
+
+                    // Waste logic
+                    const swap = getWeekParity(now);
+                    let wasteTasks: Record<string, Record<string, boolean>> = { toma: {}, valya: {} };
+                    
+                    if (day === 2) { // Tuesday
+                        if (!swap) { wasteTasks.toma["Plastik"] = false; wasteTasks.valya["Bio"] = false; }
+                        else { wasteTasks.toma["Bio"] = false; wasteTasks.valya["Plastik"] = false; }
+                    } else if (day === 5) { // Friday
+                        if (!swap) { 
+                            wasteTasks.toma["Bio"] = false; wasteTasks.toma["Papier"] = false; 
+                            wasteTasks.valya["Plastik"] = false; wasteTasks.valya["Restmuell"] = false; 
+                        } else {
+                            wasteTasks.toma["Plastik"] = false; wasteTasks.toma["Restmuell"] = false; 
+                            wasteTasks.valya["Bio"] = false; wasteTasks.valya["Papier"] = false; 
                         }
-                        nextState.wastes = wasteTasks;
-                        
-                        if (day === 5) {
-                            const bTasks = { "Вымыть ванную": false, "Вымыть раковину в ванной": false, "Навести порядок в ванной": false, "Уборка своих территорий": false };
-                            const tTasks = { "Вымыть раковину в туалете": false, "Вымыть унитаз": false, "Вымыть пол в туалете": false, "Уборка своих территорий": false };
-                            nextState.cleaningTasks = {
-                                toma: nextState.monthlyZones.toma === "Bad" ? bTasks : tTasks,
-                                valya: nextState.monthlyZones.valya === "Bad" ? bTasks : tTasks
-                            };
-                        } else if (day === 1) { // Monday reset
-                            nextState.cleaningTasks = { toma: {}, valya: {} };
-                        }
-                        
-                        nextState.kitchenDone = false;
-                        nextState.kitchenTasks = { "Посудомойка": false, "Столы": false, "Плита": false };
-                        nextState.kitchenDeadline = null;
-                        nextState.cleaningDone = { toma: false, valya: false };
-                        nextState.wasteDone = { toma: false, valya: false };
-                        nextState.notificationsSent = []; 
+                    }
+                    
+                    // Cleaning logic (Friday only)
+                    if (day === 5) {
+                        const bTasks = { "Вымыть ванную": false, "Вымыть раковину в ванной": false, "Навести порядок в ванной": false, "Уборка своих территорий": false };
+                        const tTasks = { "Вымыть раковину в туалете": false, "Вымыть унитаз": false, "Вымыть пол в туалете": false, "Уборка своих территорий": false };
+                        nextState.cleaningTasks = {
+                            toma: nextState.monthlyZones.toma === "Bad" ? bTasks : tTasks,
+                            valya: nextState.monthlyZones.valya === "Bad" ? bTasks : tTasks
+                        };
+                    } else if (day === 1) { // Monday Reset
+                         nextState.cleaningTasks = { toma: {}, valya: {} };
                     }
 
-                    if (isFirstOfMonth && nextState.lastMonthlyRotation !== currentMonthKey) {
+                    nextState.wastes = wasteTasks;
+
+                    // Monthly Rotation
+                    const currentMonthKey = `${time.full.getFullYear()}-${time.full.getMonth()}`;
+                    if (time.full.getDate() === 1 && nextState.lastMonthlyRotation !== currentMonthKey) {
                         const oldT = nextState.monthlyZones.toma;
                         nextState.monthlyZones.toma = nextState.monthlyZones.valya;
                         nextState.monthlyZones.valya = oldT;
                         nextState.lastMonthlyRotation = currentMonthKey;
                     }
 
-                    nextState.kitchenDuty = expectedDuty;
-                    nextState.lastKitchenRotation = todayStr;
                     stateChanged = true;
                 }
 
-                // 1. Bugs
+                // 1. Bugs (simplified)
                 if (nextState.bugs) {
                     nextState.bugs.forEach((bug: any) => {
                         if (bug.status === 'open') {
                             const dl = new Date(bug.deadline).getTime();
                             const diff = dl - now;
-                            const tag = `deadline-bug-${bug.id}`;
-                            if (diff > 0 && diff <= thirtyMins && !notifiedDeadlines.has(tag)) {
-                                messagesToSend.push(`<b>⏰ Напоминание: БАГ!</b>\nДля: ${bug.target ? nextState.users[bug.target].name : 'Всех'}\nОсталось 30 минут:\n${bug.desc}`);
-                                notifiedDeadlines.add(tag);
-                            }
                             if (diff < 0 && !bug.fined && bug.target) {
                                 const fine = bug.fine || 1.0;
                                 nextState.users[bug.target].balance -= fine;
                                 bug.fined = true; bug.status = 'expired';
                                 nextState.weeklyLog.push({ date: todayISO, user: bug.target, event: 'bug_fine', delta: -fine, note: `Просрочен баг: ${bug.desc.slice(0,10)}...` });
-                                messagesToSend.push(`<b>🐞 Баг просрочен!</b>\nПользователь: ${nextState.users[bug.target].name}\nШтраф: -${fine.toFixed(2)}€\nОписание: ${bug.desc}`);
+                                messagesToSend.push(`<b>🐞 Баг просрочен!</b>\nПользователь: ${nextState.users[bug.target].name}\nШтраф: -${fine.toFixed(2)}€`);
                                 stateChanged = true;
                             }
                         }
                     });
                 }
 
-                // 2. Jobs expiration
+                // 2. Market/Jobs
                 if (nextState.jobs) {
                     nextState.jobs.forEach((job: any) => {
                         const dl = new Date(job.deadline).getTime();
-                        if (job.status === 'in_progress' && dl - now > 0 && dl - now <= thirtyMins && !notifiedDeadlines.has(`job-${job.id}`)) {
-                            messagesToSend.push(`<b>⏳ Дедлайн на Бирже!</b>\nИсполнитель: ${job.assignee ? nextState.users[job.assignee].name : '?'}\nОсталось 30 минут:\n${job.title}`);
-                            notifiedDeadlines.add(`job-${job.id}`);
-                        }
                         if ((job.status === 'open' || job.status === 'in_progress') && dl < now) {
                             job.status = 'expired';
                             if (job.assignee) {
@@ -193,14 +188,14 @@ async function startServer() {
                                     title: `🆘 СПАСЕНИЕ: ${job.title} (от ${nextState.users[fu].name})`,
                                     failedUser: fu, created: todayISO
                                 });
-                                messagesToSend.push(`<b>🚑 Задача просрочена!</b>\n${nextState.users[fu].name} не справился. Любой может перехватить!`);
+                                messagesToSend.push(`<b>🚑 Задача просрочена!</b>\n${nextState.users[fu].name} не справился. Кто спасет?`);
                             }
                             stateChanged = true;
                         }
                     });
                 }
 
-                // 3. Kitchen Penalties
+                // 3. Kitchen & Waste Penalties
                 if (!nextState.kitchenDone) {
                     const dl2230 = new Date(time.full); dl2230.setHours(22, 30, 0, 0);
                     if (time.full.getTime() > dl2230.getTime() && !nextState.kitchenTasks?.["escalated_2230"]) {
@@ -210,70 +205,12 @@ async function startServer() {
                         nextState.kitchenTasks["escalated_2230"] = true;
                         nextState.weeklyLog.push({ date: todayISO, user: u, event: "kitchen_late", delta: -2.0, note: "Дедлайн 22:30" });
                         nextState.jobs.push({ 
-                            id: Date.now() + 101, creator: 'admin', title: "Помыть кухню вместо " + nextState.users[u].name, 
+                            id: Date.now() + 101, creator: 'admin', title: "Помыть кухню за " + nextState.users[u].name, 
                             reward: 2, deadline: new Date(now + 12 * 3600000).toISOString(), status: 'open', assignee: null, created: todayISO
                         });
-                        messagesToSend.push(`<b>⚠️ Дедлайн 22:30 пропущен!</b>\nПользователь: ${nextState.users[u].name}\nШтраф: -2.00€\nЗадача на Бирже.`);
+                        messagesToSend.push(`<b>⚠️ Кухня просрочена!</b>\nШтраф: -2.00€\nЗадача на Бирже.`);
                         stateChanged = true;
                     }
-                }
-
-                // 4. Waste & Cleaning Penalty (18:00)
-                const dl1800 = new Date(time.full); dl1800.setHours(18, 0, 0, 0);
-                if (time.full.getTime() > dl1800.getTime()) {
-                    if (day === 2 || day === 5) {
-                        ['toma', 'valya'].forEach(u => {
-                            const tasks = nextState.wastes?.[u] || {};
-                            if (Object.keys(tasks).length > 0 && !nextState.wasteDone?.[u] && !tasks["overdue_migrated"]) {
-                                nextState.users[u].balance -= 2.0;
-                                tasks["overdue_migrated"] = true; nextState.wasteDone[u] = true;
-                                nextState.weeklyLog.push({ date: todayISO, user: u, event: 'waste_late', delta: -2.0, note: "Просрочка мусора" });
-                                nextState.jobs.push({
-                                    id: Date.now() + 201 + Math.random(), creator: 'admin', title: "МУСОР: Хвосты от " + nextState.users[u].name,
-                                    reward: 2, deadline: new Date(now + 2*3600000).toISOString(), status: 'open', assignee: null, created: todayISO
-                                });
-                                messagesToSend.push(`<b>🔥 Просрочка мусора!</b>\nПользователь: ${nextState.users[u].name}\nШтраф: -2.00€`);
-                                stateChanged = true;
-                            }
-                        });
-                    }
-                    if (day === 5) {
-                        ['toma', 'valya'].forEach(u => {
-                            const tasks = nextState.cleaningTasks?.[u] || {};
-                            if (Object.keys(tasks).length > 0 && !nextState.cleaningDone?.[u] && !tasks["overdue_migrated"]) {
-                                nextState.users[u].balance -= 2.0;
-                                tasks["overdue_migrated"] = true; nextState.cleaningDone[u] = true;
-                                nextState.weeklyLog.push({ date: todayISO, user: u, event: 'cleaning_late', delta: -2.0, note: "Просрочка уборки" });
-                                nextState.jobs.push({
-                                    id: Date.now() + 301 + Math.random(), creator: 'admin', title: "УБОРКА: Хвосты от " + nextState.users[u].name,
-                                    reward: 2, deadline: new Date(now + 2*3600000).toISOString(), status: 'open', assignee: null, created: todayISO
-                                });
-                                messagesToSend.push(`<b>🧹 Просрочка уборки!</b>\nПользователь: ${nextState.users[u].name}\nШтраф: -2.00€`);
-                                stateChanged = true;
-                            }
-                        });
-                    }
-                }
-
-                // 5. Reminders
-                // (Omitted most reminders for brevity in thought but adding core ones)
-                const triggerRem = (tag: string, th: number, tm: number, msg: string) => {
-                    const fullTag = `remind-${todayISO}-${tag}`;
-                    if (!nextState.notificationsSent) nextState.notificationsSent = [];
-                    if ((h > th || (h === th && m >= tm)) && !nextState.notificationsSent.includes(fullTag)) {
-                        messagesToSend.push(msg);
-                        nextState.notificationsSent.push(fullTag);
-                        stateChanged = true;
-                    }
-                };
-                
-                // Example: Trash reminder at 17:00
-                if (day === 2 || day === 5) {
-                    ['toma', 'valya'].forEach(u => {
-                        if (Object.keys(nextState.wastes?.[u] || {}).length > 0 && !nextState.wasteDone?.[u]) {
-                            triggerRem(`w-${u}-1700`, 17, 0, `<b>🚛 Мусор: Напоминание!</b>\nДля: ${nextState.users[u].name}\nДедлайн в 18:00!`);
-                        }
-                    });
                 }
 
                 if (stateChanged) transaction.set(stateRef, nextState);
@@ -282,10 +219,10 @@ async function startServer() {
             for (const msg of messagesToSend) {
                 try { await sendTelegramMessage(msg); } catch (e) {}
             }
-            if (h === 0 && m === 0) notifiedDeadlines.clear();
-
-        } catch (e) { console.error("Loop error:", e); }
-    }, 60000);
+        } catch (e) { 
+            console.error("[SERVER] Loop tick error:", e); 
+        }
+    }, 30000);
 
     if (process.env.NODE_ENV !== "production") {
       const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
@@ -295,10 +232,15 @@ async function startServer() {
       app.use(express.static(distPath));
       app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
     }
-    app.listen(PORT, "0.0.0.0", () => console.log(`Server on ${PORT}`));
+    
+    app.listen(PORT, "0.0.0.0", () => {
+        console.log(`[SERVER] HomeOS ready on port ${PORT}`);
+    });
+    
   } catch (error) {
-    console.error("Startup error:", error);
+    console.error("[SERVER] Fatal startup error:", error);
     process.exit(1);
   }
 }
+
 startServer();

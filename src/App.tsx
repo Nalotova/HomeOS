@@ -39,7 +39,7 @@ import { useAppState } from './hooks/useAppState';
 import { sendTelegramMessage } from "./services/telegramService";
 import { doc, onSnapshot, setDoc, getDocFromServer } from 'firebase/firestore';
 
-const APP_VERSION = "2.3.4";
+const APP_VERSION = "2.4.0";
 
 // Image compression helper to keep AppState < 1MB
 const compressImage = (base64: string, maxWidth = 800, maxHeight = 800, quality = 0.7): Promise<string> => {
@@ -1113,9 +1113,9 @@ export default function App() {
     const tasks = Object.keys(taskState)
       .filter(k => !['escalated_2230', 'escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
       .sort((a, b) => (taskState[a] ? 1 : 0) - (taskState[b] ? 1 : 0));
-    const [newTaskTitle, setNewTaskTitle] = useState("");
     const [newWasteTask, setNewWasteTask] = useState<{ user: "toma" | "valya", title: string } | null>(null);
     const [newCleaningTask, setNewCleaningTask] = useState<{ user: "toma" | "valya", title: string } | null>(null);
+    const [newTaskTitle, setNewTaskTitle] = useState("");
 
     const toggleWaste = (u: "toma" | "valya", task: string) => {
         persist(s => ({
@@ -3026,10 +3026,10 @@ export default function App() {
                   width: 8, 
                   height: 8, 
                   borderRadius: "50%", 
-                  background: (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 120000)) ? "#10B981" : "#EF4444", 
+                  background: (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 90000)) ? "#10B981" : "#EF4444", 
                   display: "inline-block",
-                  boxShadow: (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 120000)) ? "0 0 8px #10B98188" : "none"
-                }} title={state.serverHeartbeat ? `Сервер: ${state.serverHeartbeat.lastLocalTime} (+2h offset resolved)` : "Сервер не в сети"} />
+                  boxShadow: (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 90000)) ? "0 0 8px #10B98188" : "none"
+                }} title={state.serverHeartbeat ? `Сервер: ${state.serverHeartbeat.lastLocalTime} (Активен)` : "Сервер не в сети"} />
               </h1>
             </div>
             <div style={styles.headerRight}>
