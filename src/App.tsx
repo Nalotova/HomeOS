@@ -884,6 +884,9 @@ export default function App() {
     const dl = new Date();
     const [h, m] = jobForm.time.split(":").map(x => parseInt(x));
     dl.setHours(h, m, 0, 0);
+    if (dl.getTime() < Date.now()) {
+      dl.setDate(dl.getDate() + 1);
+    }
 
     // If the selected time is in the past for today, assume the user meant today anyway or handle as expired later
     // For now, just set it to today at that time.
@@ -971,6 +974,9 @@ export default function App() {
     const dl = new Date();
     const [h, m] = delegateTime.split(":").map(x => parseInt(x));
     dl.setHours(h, m, 0, 0);
+    if (dl.getTime() < Date.now()) {
+      dl.setDate(dl.getDate() + 1);
+    }
 
     const job: Job = {
       id: Date.now(),
@@ -1111,7 +1117,7 @@ export default function App() {
     const isDuty = state.kitchenDuty === activeUser;
     const taskState = state.kitchenTasks || { "Посудомойка": false, "Столы": false, "Плита": false };
     const tasks = Object.keys(taskState)
-      .filter(k => !['escalated_2230', 'escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
+      .filter(k => !['escalated_2230', 'escalated_2130', 'escalated_0800', 'escalated_1830', 'escalated_1800', 'overdue_migrated'].includes(k))
       .sort((a, b) => (taskState[a] ? 1 : 0) - (taskState[b] ? 1 : 0));
     const [newWasteTask, setNewWasteTask] = useState<{ user: "toma" | "valya", title: string } | null>(null);
     const [newCleaningTask, setNewCleaningTask] = useState<{ user: "toma" | "valya", title: string } | null>(null);
@@ -1195,7 +1201,7 @@ export default function App() {
     const usersToShowWaste = isAdmin ? ["toma", "valya"] : 
                              (activeUser === "toma" || activeUser === "valya") ? [activeUser] : [];
 
-    const techKeys = ['escalated_2230', 'escalated_2130', 'escalated_0800', 'overdue_migrated'];
+    const techKeys = ['escalated_2230', 'escalated_2130', 'escalated_0800', 'escalated_1830', 'escalated_1800', 'overdue_migrated'];
     
     const wasteDone = state.wasteDone || { toma: false, valya: false };
     const hasAnyWasteTasks = usersToShowWaste.some(u => 
@@ -1356,7 +1362,7 @@ export default function App() {
                         {usersToShowWaste.map(u => {
                             const uTasks = state.wastes[u] || {};
                             const taskNames = Object.keys(uTasks)
-                                .filter(k => !['escalated_2230', 'escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
+                                .filter(k => !['escalated_2230', 'escalated_2130', 'escalated_0800', 'escalated_1830', 'escalated_1800', 'overdue_migrated'].includes(k))
                                 .sort((a, b) => (uTasks[a] ? 1 : 0) - (uTasks[b] ? 1 : 0));
                             
                             return (
@@ -1485,52 +1491,86 @@ export default function App() {
                                         </div>
                                     )}
 
-                                    {!wasteDone[u] && (
-                                        <div style={{ marginTop: 16 }}>
-                                            <button 
-                                                disabled={(taskNames.length > 0 && !taskNames.every(tn => uTasks[tn])) || (activeUser !== u && !isAdmin)}
-                                                style={{ 
-                                                    ...styles.primaryBtn, 
-                                                    width: "100%", 
-                                                    background: ((taskNames.length === 0 || taskNames.every(tn => uTasks[tn])) && (activeUser === u || isAdmin)) ? "#059669" : "#CBD5E1",
-                                                    cursor: ((taskNames.length === 0 || taskNames.every(tn => uTasks[tn])) && (activeUser === u || isAdmin)) ? "pointer" : "not-allowed",
-                                                    fontSize: 14,
-                                                    height: 48,
-                                                    boxShadow: (taskNames.length === 0 || taskNames.every(tn => uTasks[tn])) ? "0 4px 6px -1px rgba(16, 185, 129, 0.2)" : "none"
-                                                }}
-                                                onClick={() => markWasteDone(u as 'toma' | 'valya')}
-                                            >
-                                                {taskNames.length === 0 ? "В ЭТОТ РАЗ БЕЗ ЗАДАЧ — ЗАВЕРШИТЬ ✅" : (!taskNames.every(tn => uTasks[tn]) ? `Сначала выполните задачи (${taskNames.filter(tn => !uTasks[tn]).length})` : "ЗАВЕРШИТЬ ВЫНОС ✅")}
-                                            </button>
-                                        </div>
-                                    )}
+                                    {taskNames.length > 0 && (
+                                        (state.wastes[u]?.["escalated_1830"] || state.wastes[u]?.["escalated_1800"] || state.wastes[u]?.["overdue_migrated"] || (!wasteDone[u] && wasteRemaining <= 0)) ? (
+                                            <div style={{ marginTop: 16, background: "#FEF2F2", padding: "12px", borderRadius: 12, border: "1px solid #FCA5A5" }}>
+                                                <div style={{ fontSize: 16, marginBottom: 4, color: "#EF4444", fontWeight: 800, textAlign: "center" }}>⚠️ ВРЕМЯ ВЫШЛО</div>
+                                                <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 12, textAlign: "center", color: "#EF4444" }}>Штраф выписан. Задание актуально до выполнения или до покупки на Бирже.</div>
+                                                
+                                                {wasteDone[u] ? (
+                                                    <div style={{ padding: "8px", background: "#ECFDF5", borderRadius: 8, textAlign: "center", color: "#065F46", fontWeight: 700, border: "1px solid #10B981", marginBottom: 12 }}>
+                                                        ✨ ВЫНОС МУСОРА ЗАВЕРШЕН!
+                                                    </div>
+                                                ) : (
+                                                    <button 
+                                                        disabled={!taskNames.every(tn => uTasks[tn]) || (activeUser !== u && !isAdmin)}
+                                                        style={{ 
+                                                            ...styles.primaryBtn, 
+                                                            width: "100%", 
+                                                            background: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "#059669" : "#CBD5E1",
+                                                            cursor: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "pointer" : "not-allowed",
+                                                            fontSize: 14,
+                                                            height: 48,
+                                                            marginBottom: 12,
+                                                            boxShadow: taskNames.every(tn => uTasks[tn]) ? "0 4px 6px -1px rgba(16, 185, 129, 0.2)" : "none"
+                                                        }}
+                                                        onClick={() => markWasteDone(u as 'toma' | 'valya')}
+                                                    >
+                                                        {!taskNames.every(tn => uTasks[tn]) ? `Сначала выполните задачи (${taskNames.filter(tn => !uTasks[tn]).length})` : "ЗАВЕРШИТЬ ВЫНОС ✅"}
+                                                    </button>
+                                                )}
 
-                                    {wasteDone[u] && (
-                                        <div style={{ marginTop: 16, padding: "14px", background: "#ECFDF5", borderRadius: 10, textAlign: "center", color: "#065F46", fontWeight: 700, border: "2px solid #10B981" }}>
-                                            ✨ ВЫНОС МУСОРА ЗАВЕРШЕН!
-                                            {isAdmin && state.wastes[u]?.["overdue_migrated"] && (
-                                                <button 
-                                                    style={{ display: "block", width: "100%", marginTop: 8, background: "#EF4444", color: "white", border: "none", padding: "6px", borderRadius: 6, fontSize: 11 }}
-                                                    onClick={() => cancelPenalty('waste', u as 'toma' | 'valya')}
-                                                >
-                                                    Отменить штраф
-                                                </button>
-                                            )}
-                                            {!isAdmin && activeUser === u && state.wastes[u]?.["overdue_migrated"] && (
-                                                <button 
-                                                    style={{ display: "block", width: "100%", marginTop: 8, background: "#6366F1", color: "white", border: "none", padding: "6px", borderRadius: 6, fontSize: 11 }}
-                                                    onClick={() => requestPenaltyCancellation('waste', u as 'toma' | 'valya')}
-                                                >
-                                                    Запросить отмену
-                                                </button>
-                                            )}
-                                        </div>
+                                                {isAdmin && (
+                                                    <button 
+                                                        style={{ ...styles.primaryBtn, background: "#EF4444", width: "100%", height: 36, fontSize: 12 }}
+                                                        onClick={() => cancelPenalty('waste', u as 'toma' | 'valya')}
+                                                    >
+                                                        ОТМЕНИТЬ ШТРАФ ↩️
+                                                    </button>
+                                                )}
+                                                {!isAdmin && activeUser === u && (
+                                                    <button 
+                                                        style={{ ...styles.primaryBtn, background: "#6366F1", width: "100%", height: 36, fontSize: 12 }}
+                                                        onClick={() => requestPenaltyCancellation('waste', u as 'toma' | 'valya')}
+                                                    >
+                                                        ЗАПРОСИТЬ ОТМЕНУ 🙏
+                                                    </button>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <>
+                                                {!wasteDone[u] && (
+                                                    <div style={{ marginTop: 16 }}>
+                                                        <button 
+                                                            disabled={!taskNames.every(tn => uTasks[tn]) || (activeUser !== u && !isAdmin)}
+                                                            style={{ 
+                                                                ...styles.primaryBtn, 
+                                                                width: "100%", 
+                                                                background: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "#059669" : "#CBD5E1",
+                                                                cursor: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "pointer" : "not-allowed",
+                                                                fontSize: 14,
+                                                                height: 48,
+                                                                boxShadow: taskNames.every(tn => uTasks[tn]) ? "0 4px 6px -1px rgba(16, 185, 129, 0.2)" : "none"
+                                                            }}
+                                                            onClick={() => markWasteDone(u as 'toma' | 'valya')}
+                                                        >
+                                                            {!taskNames.every(tn => uTasks[tn]) ? `Сначала выполните задачи (${taskNames.filter(tn => !uTasks[tn]).length})` : "ЗАВЕРШИТЬ ВЫНОС ✅"}
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                {wasteDone[u] && (
+                                                    <div style={{ marginTop: 16, padding: "14px", background: "#ECFDF5", borderRadius: 10, textAlign: "center", color: "#065F46", fontWeight: 700, border: "2px solid #10B981" }}>
+                                                        ✨ ВЫНОС МУСОРА ЗАВЕРШЕН!
+                                                    </div>
+                                                )}
+                                            </>
+                                        )
                                     )}
                                 </div>
                             );
                         })}
                         
-                        {hasAnyWasteTasks && !usersToShowWaste.every(u => wasteDone[u] || (Object.keys(state.wastes[u] || {}).filter(k => !['escalated_2230', 'escalated_0800', 'overdue_migrated'].includes(k)).length === 0)) && (
+                        {hasAnyWasteTasks && !usersToShowWaste.every(u => wasteDone[u] || (Object.keys(state.wastes[u] || {}).filter(k => !techKeys.includes(k)).length === 0)) && (
                             <>
                                 <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#EF4444", width: `${Math.min(100, Math.max(0, ((now.getHours() * 60 + now.getMinutes()) / (18 * 60)) * 100))}%` }}></div></div>
                                 <div style={{ marginTop: 8, fontSize: 13, color: wasteRemaining < (3 * 60 * 60 * 1000) ? "#DC2626" : "#64748B", fontWeight: 700, textAlign: "center" }}>
@@ -1558,7 +1598,7 @@ export default function App() {
                         {usersToShowWaste.map(u => {
                             const uTasks = state.cleaningTasks[u] || {};
                             const taskNames = Object.keys(uTasks)
-                                .filter(k => !['escalated_2230', 'escalated_2130', 'escalated_0800', 'overdue_migrated'].includes(k))
+                                .filter(k => !['escalated_2230', 'escalated_2130', 'escalated_0800', 'escalated_1830', 'escalated_1800', 'overdue_migrated'].includes(k))
                                 .sort((a, b) => (uTasks[a] ? 1 : 0) - (uTasks[b] ? 1 : 0));
                             
                             return (
@@ -1681,52 +1721,86 @@ export default function App() {
                                         </div>
                                     )}
 
-                                    {!state.cleaningDone[u] && (
-                                        <div style={{ marginTop: 16 }}>
-                                            <button 
-                                                disabled={(taskNames.length > 0 && !taskNames.every(tn => uTasks[tn])) || (activeUser !== u && !isAdmin)}
-                                                style={{ 
-                                                    ...styles.primaryBtn, 
-                                                    width: "100%", 
-                                                    background: ((taskNames.length === 0 || taskNames.every(tn => uTasks[tn])) && (activeUser === u || isAdmin)) ? "#059669" : "#CBD5E1",
-                                                    cursor: ((taskNames.length === 0 || taskNames.every(tn => uTasks[tn])) && (activeUser === u || isAdmin)) ? "pointer" : "not-allowed",
-                                                    fontSize: 14,
-                                                    height: 48,
-                                                    boxShadow: (taskNames.length === 0 || taskNames.every(tn => uTasks[tn])) ? "0 4px 6px -1px rgba(16, 185, 129, 0.2)" : "none"
-                                                }}
-                                                onClick={() => markCleaningDone(u as 'toma' | 'valya')}
-                                            >
-                                                {taskNames.length === 0 ? "В ЭТОТ РАЗ БЕЗ ЗАДАЧ — ЗАВЕРШИТЬ ✅" : (!taskNames.every(tn => uTasks[tn]) ? `Сначала выполните задачи (${taskNames.filter(tn => !uTasks[tn]).length})` : "ЗАВЕРШИТЬ УБОРКУ ✅")}
-                                            </button>
-                                        </div>
-                                    )}
+                                    {taskNames.length > 0 && (
+                                        (state.cleaningTasks[u]?.["escalated_1830"] || state.cleaningTasks[u]?.["escalated_1800"] || state.cleaningTasks[u]?.["overdue_migrated"] || (!state.cleaningDone[u] && cleaningRemaining <= 0)) ? (
+                                            <div style={{ marginTop: 16, background: "#FEF2F2", padding: "12px", borderRadius: 12, border: "1px solid #FCA5A5" }}>
+                                                <div style={{ fontSize: 16, marginBottom: 4, color: "#EF4444", fontWeight: 800, textAlign: "center" }}>⚠️ ВРЕМЯ ВЫШЛО</div>
+                                                <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 12, textAlign: "center", color: "#EF4444" }}>Штраф выписан. Задание актуально до выполнения или до покупки на Бирже.</div>
+                                                
+                                                {state.cleaningDone[u] ? (
+                                                    <div style={{ padding: "8px", background: "#ECFDF5", borderRadius: 8, textAlign: "center", color: "#065F46", fontWeight: 700, border: "1px solid #10B981", marginBottom: 12 }}>
+                                                        ✨ ДОМ СИЯЕТ! УБОРКА ЗАВЕРШЕНА
+                                                    </div>
+                                                ) : (
+                                                    <button 
+                                                        disabled={!taskNames.every(tn => uTasks[tn]) || (activeUser !== u && !isAdmin)}
+                                                        style={{ 
+                                                            ...styles.primaryBtn, 
+                                                            width: "100%", 
+                                                            background: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "#059669" : "#CBD5E1",
+                                                            cursor: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "pointer" : "not-allowed",
+                                                            fontSize: 14,
+                                                            height: 48,
+                                                            marginBottom: 12,
+                                                            boxShadow: taskNames.every(tn => uTasks[tn]) ? "0 4px 6px -1px rgba(16, 185, 129, 0.2)" : "none"
+                                                        }}
+                                                        onClick={() => markCleaningDone(u as 'toma' | 'valya')}
+                                                    >
+                                                        {!taskNames.every(tn => uTasks[tn]) ? `Сначала выполните задачи (${taskNames.filter(tn => !uTasks[tn]).length})` : "ЗАВЕРШИТЬ УБОРКУ ✅"}
+                                                    </button>
+                                                )}
 
-                                    {state.cleaningDone[u] && (
-                                        <div style={{ marginTop: 16, padding: "14px", background: "#ECFDF5", borderRadius: 10, textAlign: "center", color: "#065F46", fontWeight: 700, border: "2px solid #10B981" }}>
-                                            ✨ ДОМ СИЯЕТ! УБОРКА ЗАВЕРШЕНА
-                                            {isAdmin && state.cleaningTasks[u]?.["overdue_migrated"] && (
-                                                <button 
-                                                    style={{ display: "block", width: "100%", marginTop: 8, background: "#EF4444", color: "white", border: "none", padding: "6px", borderRadius: 6, fontSize: 11 }}
-                                                    onClick={() => cancelPenalty('cleaning', u as 'toma' | 'valya')}
-                                                >
-                                                    Отменить штраф
-                                                </button>
-                                            )}
-                                            {!isAdmin && activeUser === u && state.cleaningTasks[u]?.["overdue_migrated"] && (
-                                                <button 
-                                                    style={{ display: "block", width: "100%", marginTop: 8, background: "#6366F1", color: "white", border: "none", padding: "6px", borderRadius: 6, fontSize: 11 }}
-                                                    onClick={() => requestPenaltyCancellation('cleaning', u as 'toma' | 'valya')}
-                                                >
-                                                    Запросить отмену
-                                                </button>
-                                            )}
-                                        </div>
+                                                {isAdmin && (
+                                                    <button 
+                                                        style={{ ...styles.primaryBtn, background: "#EF4444", width: "100%", height: 36, fontSize: 12 }}
+                                                        onClick={() => cancelPenalty('cleaning', u as 'toma' | 'valya')}
+                                                    >
+                                                        ОТМЕНИТЬ ШТРАФ ↩️
+                                                    </button>
+                                                )}
+                                                {!isAdmin && activeUser === u && (
+                                                    <button 
+                                                        style={{ ...styles.primaryBtn, background: "#6366F1", width: "100%", height: 36, fontSize: 12 }}
+                                                        onClick={() => requestPenaltyCancellation('cleaning', u as 'toma' | 'valya')}
+                                                    >
+                                                        ЗАПРОСИТЬ ОТМЕНУ 🙏
+                                                    </button>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <>
+                                                {!state.cleaningDone[u] && (
+                                                    <div style={{ marginTop: 16 }}>
+                                                        <button 
+                                                            disabled={!taskNames.every(tn => uTasks[tn]) || (activeUser !== u && !isAdmin)}
+                                                            style={{ 
+                                                                ...styles.primaryBtn, 
+                                                                width: "100%", 
+                                                                background: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "#059669" : "#CBD5E1",
+                                                                cursor: (taskNames.every(tn => uTasks[tn]) && (activeUser === u || isAdmin)) ? "pointer" : "not-allowed",
+                                                                fontSize: 14,
+                                                                height: 48,
+                                                                boxShadow: taskNames.every(tn => uTasks[tn]) ? "0 4px 6px -1px rgba(16, 185, 129, 0.2)" : "none"
+                                                            }}
+                                                            onClick={() => markCleaningDone(u as 'toma' | 'valya')}
+                                                        >
+                                                            {!taskNames.every(tn => uTasks[tn]) ? `Сначала выполните задачи (${taskNames.filter(tn => !uTasks[tn]).length})` : "ЗАВЕРШИТЬ УБОРКУ ✅"}
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                {state.cleaningDone[u] && (
+                                                    <div style={{ marginTop: 16, padding: "14px", background: "#ECFDF5", borderRadius: 10, textAlign: "center", color: "#065F46", fontWeight: 700, border: "2px solid #10B981" }}>
+                                                        ✨ ДОМ СИЯЕТ! УБОРКА ЗАВЕРШЕНА
+                                                    </div>
+                                                )}
+                                            </>
+                                        )
                                     )}
                                 </div>
                             );
                         })}
 
-                        {hasAnyCleaningTasks && !usersToShowWaste.every(u => state.cleaningDone[u] || (Object.keys(state.cleaningTasks[u] || {}).filter(k => !['escalated_2230', 'escalated_0800', 'overdue_migrated'].includes(k)).length === 0)) && (
+                        {hasAnyCleaningTasks && !usersToShowWaste.every(u => state.cleaningDone[u] || (Object.keys(state.cleaningTasks[u] || {}).filter(k => !techKeys.includes(k)).length === 0)) && (
                             <>
                                 <div style={styles.progressBar}><div style={{ ...styles.progressFill, background: "#10B981", width: `${Math.min(100, Math.max(0, ((now.getHours() * 60 + now.getMinutes()) / (18 * 60)) * 100))}%` }}></div></div>
                                 <div style={{ marginTop: 8, fontSize: 13, color: cleaningRemaining < (3 * 60 * 60 * 1000) ? "#DC2626" : "#64748B", fontWeight: 700, textAlign: "center" }}>
