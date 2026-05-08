@@ -1,4 +1,5 @@
 import express from "express";
+import "dotenv/config";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -13,7 +14,8 @@ const __dirname = path.dirname(__filename);
 // Helper for stable Local Time (Europe/Berlin)
 function getLocalTime() {
     const now = new Date();
-    const formatter = new Intl.DateTimeFormat('fr-CA', { 
+    // Using Intl to get parts for the specific timezone
+    const formatter = new Intl.DateTimeFormat('en-US', { 
         timeZone: 'Europe/Berlin',
         year: 'numeric', month: '2-digit', day: '2-digit',
         hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -22,8 +24,10 @@ function getLocalTime() {
     const parts = formatter.formatToParts(now);
     const val = (type: string) => parts.find(p => p.type === type)?.value || "";
     
-    const s = now.toLocaleString("en-US", {timeZone: "Europe/Berlin"});
-    const berlinDate = new Date(s);
+    // Create a date object that represents the same time in Berlin
+    // Note: We use the ISO format YYYY-MM-DDTHH:mm:ss for reliable parsing
+    const isoStr = `${val('year')}-${val('month')}-${val('day')}T${val('hour')}:${val('minute')}:${val('second')}`;
+    const berlinDate = new Date(isoStr);
 
     return {
         h: parseInt(val('hour')),
@@ -56,10 +60,25 @@ async function startServer() {
     const firebaseApp = initializeApp(firebaseConfig);
     const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
 
-    const notifiedDeadlines = new Set<string>();
+    // Startup Telegram Notification
+    try {
+        const startupMsg = "<b>🚀 Сервер HomeOS запущен!</b>\nСистема уведомлений активна. Ожидайте напоминаний.";
+        const res = await sendTelegramMessage(startupMsg);
+        if (res.success) {
+            console.log("[SERVER] Startup notification sent to Telegram");
+        } else {
+            console.error("[SERVER] Startup notification failed:", res.error);
+        }
+    } catch (e) {
+        console.error("[SERVER] Failed to send startup notification:", e);
+    }
 
-    // LOOP: 30 seconds for heartbeat reliability
-    setInterval(async () => {
+    // Heartbeat & Notification Loop (Safe Recursive Pattern with Instance Locking)
+    const serverInstanceId = Math.random().toString(36).substring(2, 10);
+    console.log(`[SERVER] Instance ID: ${serverInstanceId}`);
+
+    async function runLoop() {
+        const iterationId = Math.random().toString(36).substring(7);
         try {
             const time = getLocalTime();
             const now = time.nowTs;
@@ -67,7 +86,6 @@ async function startServer() {
             const m = time.m;
             const day = time.day;
             const todayISO = time.iso;
-            const thirtyMins = 30 * 60 * 1000;
             
             const next8AMDate = new Date(time.full);
             if (next8AMDate.getHours() >= 8) {
@@ -77,51 +95,78 @@ async function startServer() {
             const next8AM = next8AMDate.toISOString();
 
             let messagesToSend: string[] = [];
+            let transactionSuccess = false;
 
             await runTransaction(db, async (transaction) => {
                 const stateRef = doc(db, "state", "current");
                 const stateSnap = await transaction.get(stateRef);
                 if (!stateSnap.exists()) return;
+                
                 const state = stateSnap.data();
                 
+                // SINGLETON LOCK: Only the instance that updated the heartbeat most recently 
+                // or after a timeout (90s) can claim the tick to avoid duplicates.
+                const lastHeartbeat = state.serverHeartbeat?.lastTick || 0;
+                const isLeader = !state.serverHeartbeat?.instanceId || 
+                                 state.serverHeartbeat?.instanceId === serverInstanceId || 
+                                 (now - lastHeartbeat > 90000);
+
                 const nextState = JSON.parse(JSON.stringify(state));
+                
+                // Reset/Init arrays if missing
+                if (!nextState.notificationsSent) nextState.notificationsSent = [];
+                
+                // Local state for this transaction attempt
+                const currentBatchMessages: string[] = [];
+
+                // Prune old notifications (keep only today and yesterday)
+                const yesterdayDate = new Date(time.full);
+                yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+                const yesterdayISO = yesterdayDate.toISOString().split('T')[0];
+                nextState.notificationsSent = nextState.notificationsSent.filter((id: string) => 
+                    id.includes(todayISO) || id.includes(yesterdayISO)
+                );
+
                 nextState.serverHeartbeat = {
                     lastTick: now,
-                    lastLocalTime: `${h}:${String(m).padStart(2,'0')}`,
-                    lastLocalDate: todayISO
+                    lastLocalTime: `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`,
+                    lastLocalDate: todayISO,
+                    iterationId,
+                    instanceId: serverInstanceId,
+                    tgConfigured: !!(process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN || state.tgBotToken)
                 };
                 
                 if (state.vacationMode) {
                     transaction.set(stateRef, nextState);
+                    transactionSuccess = true;
                     return;
                 }
 
-                let stateChanged = true;
+                // If not the leader, just update heartbeat (for visibility) but don't send notifications
+                if (!isLeader) {
+                    transaction.set(stateRef, nextState);
+                    transactionSuccess = true; 
+                    return;
+                }
+
+                let stateChanged = true; 
                 const expectedDuty = (day % 2 === 1) ? "toma" : "valya";
 
                 // 0. CHECK FOR RESET / ROTATION
-                // Use ISO date for stability. If DB iso date != current iso date, CLEAR EVERYTHING for new day.
                 const isNewDay = nextState.lastRotationISO !== todayISO;
-                const dutyCorrect = nextState.kitchenDuty === expectedDuty;
-
-                if (isNewDay || !dutyCorrect) {
-                    console.log(`[SERVER] RESET/ROTATION TRIGGERED: NewDay=${isNewDay}, DutyCorrect=${dutyCorrect}`);
-                    
-                    // Always Reset Kitchen if it's a new day or duty swap
+                if (isNewDay || nextState.kitchenDuty !== expectedDuty) {
+                    console.log(`[SERVER] Day Reset/Rotation. NewDay: ${isNewDay}`);
                     nextState.kitchenDone = false;
                     nextState.kitchenTasks = { "Посудомойка": false, "Столы": false, "Плита": false };
                     nextState.kitchenDuty = expectedDuty;
                     nextState.kitchenDeadline = null;
                     nextState.lastRotationISO = todayISO;
-                    nextState.lastKitchenRotation = time.dateStr; // Keep legacy field for compatibility if UI uses it
-
-                    // Reset Daily Progress Flags for Kitchen/Notifications
-                    nextState.notificationsSent = [];
+                    nextState.lastKitchenRotation = time.dateStr;
+                    nextState.notificationsSent = []; // Reset daily sent list
 
                     // Waste logic
                     const swap = getWeekParity(now);
                     let newWasteTasks: Record<string, Record<string, boolean>> | null = null;
-                    
                     if (day === 2) { // Tuesday
                         newWasteTasks = { toma: {}, valya: {} };
                         if (!swap) { newWasteTasks.toma["Plastik"] = false; newWasteTasks.valya["Bio"] = false; }
@@ -136,28 +181,24 @@ async function startServer() {
                             newWasteTasks.valya["Bio"] = false; newWasteTasks.valya["Papier"] = false; 
                         }
                     }
-                    
                     if (newWasteTasks) {
                         nextState.wastes = newWasteTasks;
                         nextState.wasteDone = { toma: false, valya: false };
                     }
 
-                    // Cleaning logic (Friday only)
+                    // Cleaning logic
                     if (day === 5) {
                         const bTasks = { "Вымыть ванную": false, "Вымыть раковину в ванной": false, "Навести порядок в ванной": false, "Уборка своих территорий": false };
                         const tTasks = { "Вымыть раковину в туалете": false, "Вымыть унитаз": false, "Вымыть пол в туалете": false, "Уборка своих территорий": false };
+                        const zones = nextState.monthlyZones || { toma: "Bad", valya: "Toilette" };
                         nextState.cleaningTasks = {
-                            toma: nextState.monthlyZones.toma === "Bad" ? bTasks : tTasks,
-                            valya: nextState.monthlyZones.valya === "Bad" ? bTasks : tTasks
+                            toma: zones.toma === "Bad" ? bTasks : tTasks,
+                            valya: zones.valya === "Bad" ? bTasks : tTasks
                         };
                         nextState.cleaningDone = { toma: false, valya: false };
-                    } else if (day === 1) { // Monday Reset
-                        ["toma", "valya"].forEach(u => {
-                            if (nextState.cleaningDone?.[u] || !nextState.cleaningTasks?.[u] || Object.keys(nextState.cleaningTasks[u]).length === 0) {
-                                nextState.cleaningTasks[u] = {};
-                                nextState.cleaningDone[u] = false;
-                            }
-                        });
+                    } else if (day === 1) {
+                         nextState.cleaningTasks = { toma: {}, valya: {} };
+                         nextState.cleaningDone = { toma: false, valya: false };
                     }
 
                     // Monthly Rotation
@@ -168,29 +209,27 @@ async function startServer() {
                         nextState.monthlyZones.valya = oldT;
                         nextState.lastMonthlyRotation = currentMonthKey;
                     }
-
                     stateChanged = true;
                 }
 
-                // 1. Bugs (simplified)
+                // 1. Bugs
                 if (nextState.bugs) {
                     nextState.bugs.forEach((bug: any) => {
                         if (bug.status === 'open') {
-                            const dl = new Date(bug.deadline).getTime();
-                            const diff = dl - now;
-                            if (diff < 0 && !bug.fined && bug.target) {
+                             const dl = new Date(bug.deadline).getTime();
+                             if (dl < now && !bug.fined && bug.target) {
                                 const fine = bug.fine || 1.0;
                                 nextState.users[bug.target].balance -= fine;
                                 bug.fined = true; bug.status = 'expired';
-                                nextState.weeklyLog.push({ date: todayISO, user: bug.target, event: 'bug_fine', delta: -fine, note: `Просрочен баг: ${bug.desc.slice(0,10)}...` });
-                                messagesToSend.push(`<b>🐞 Баг просрочен!</b>\nПользователь: ${nextState.users[bug.target].name}\nШтраф: -${fine.toFixed(2)}€`);
+                                nextState.weeklyLog.push({ date: todayISO, user: bug.target, event: 'bug_fine', delta: -fine, note: `Штраф: баг ${bug.desc.slice(0,10)}` });
+                                currentBatchMessages.push(`<b>🐞 Баг просрочен!</b>\n${nextState.users[bug.target].name}: -${fine.toFixed(2)}€`);
                                 stateChanged = true;
-                            }
+                             }
                         }
                     });
                 }
 
-                // 2. Market/Jobs
+                // 2. Market Jobs
                 if (nextState.jobs) {
                     nextState.jobs.forEach((job: any) => {
                         const dl = new Date(job.deadline).getTime();
@@ -204,7 +243,7 @@ async function startServer() {
                                     title: `🆘 СПАСЕНИЕ: ${job.title} (от ${nextState.users[fu].name})`,
                                     failedUser: fu, created: todayISO
                                 });
-                                messagesToSend.push(`<b>🚑 Задача просрочена!</b>\n${nextState.users[fu].name} не справился. Кто спасет?`);
+                                currentBatchMessages.push(`<b>🚑 Задача просрочена!</b>\n${nextState.users[fu].name} не справился. Кто спасет?`);
                             }
                             stateChanged = true;
                         }
@@ -213,111 +252,125 @@ async function startServer() {
 
                 // 3. Reminders & Penalties
                 const ts = time.full.getTime();
-
                 const getTimes = (deadlineH: number, deadlineM: number) => {
                     const dl = new Date(time.full); dl.setHours(deadlineH, deadlineM, 0, 0);
-                    const r1 = new Date(dl.getTime() - 90 * 60 * 1000); // 1.5h before
-                    const r2 = new Date(dl.getTime() - 30 * 60 * 1000); // 30m before
-                    return { dl: dl.getTime(), r1: r1.getTime(), r2: r2.getTime() };
+                    return { dl: dl.getTime(), r1: dl.getTime() - 90*60*1000, r2: dl.getTime() - 30*60*1000 };
                 };
-
                 const kitchenTimes = getTimes(22, 30);
                 const wcTimes = getTimes(18, 0);
 
-                const checkReminders = (taskKey: string, taskDesc: string, userKey: string, times: {r1: number, r2: number}) => {
-                    let triggered = false;
-                    const notif1 = `${taskKey}_rem1_${userKey}_${todayISO}`;
-                    const notif2 = `${taskKey}_rem2_${userKey}_${todayISO}`;
+                // Morning Brief
+                const morningNotif = `morning_briefing_${todayISO}`;
+                if (h === 8 && m < 15 && !nextState.notificationsSent.includes(morningNotif)) {
+                    nextState.notificationsSent.push(morningNotif);
+                    const dutyName = nextState.users[nextState.kitchenDuty]?.name || nextState.kitchenDuty;
+                    let brief = `<b>☀️ HomeOS: Отчет (${todayISO})</b>\n\n`;
+                    brief += `🧼 Кухня: <b>${dutyName}</b>\n`;
+                    if (day === 5) brief += `🧽 Пятница — день уборки!\n`;
+                    if (day === 2 || day === 5) brief += `🗑️ Сегодня вынос мусора!\n`;
+                    currentBatchMessages.push(brief);
+                    stateChanged = true;
+                }
 
-                    if (ts >= times.r1 && !nextState.notificationsSent.includes(notif1)) {
-                        nextState.notificationsSent.push(notif1);
-                        messagesToSend.push(`<b>⏰ Напоминание (1.5 ч)!</b>\n${nextState.users[userKey].name}, не забудь про задачу: ${taskDesc}`);
-                        triggered = true;
+                const checkReminders = (taskKey: string, taskDesc: string, userKey: string, times: {r1: number, r2: number}) => {
+                    const n1 = `${taskKey}_r1_${userKey}_${todayISO}`;
+                    const n2 = `${taskKey}_r2_${userKey}_${todayISO}`;
+                    let t = false;
+                    if (ts >= times.r1 && !nextState.notificationsSent.includes(n1)) {
+                        nextState.notificationsSent.push(n1);
+                        currentBatchMessages.push(`<b>⏰ Напоминание (1.5 ч)!</b>\n${nextState.users[userKey].name}, пора: ${taskDesc}`);
+                        t = true;
                     }
-                    if (ts >= times.r2 && !nextState.notificationsSent.includes(notif2)) {
-                        nextState.notificationsSent.push(notif2);
-                        messagesToSend.push(`<b>⏳ Внимание (30 мин)!</b>\n${nextState.users[userKey].name}, скоро дедлайн: ${taskDesc}`);
-                        triggered = true;
+                    if (ts >= times.r2 && !nextState.notificationsSent.includes(n2)) {
+                        nextState.notificationsSent.push(n2);
+                        currentBatchMessages.push(`<b>⌛ Внимание (30 мин)!</b>\n${nextState.users[userKey].name}, скоро дедлайн: ${taskDesc}`);
+                        t = true;
                     }
-                    return triggered;
+                    return t;
                 };
 
-                // Kitchen
+                // Kitchen duty
                 if (!nextState.kitchenDone) {
                     const u = nextState.kitchenDuty;
                     const kt = nextState.kitchenTasks || {};
-                    const hasKitchen = Object.keys(kt).filter(k => !k.startsWith('escalated') && k !== 'overdue_migrated').length > 0;
-                    
-                    if (hasKitchen) {
-                        if (checkReminders('kitchen', 'Дежурство по кухне 🧼', u, kitchenTimes)) stateChanged = true;
-
+                    const incomplete = Object.entries(kt).filter(([k,v]) => !k.startsWith('escalated') && v === false);
+                    if (incomplete.length > 0) {
+                        if (checkReminders('kitchen', 'Кухня 🧼', u, kitchenTimes)) stateChanged = true;
                         if (ts > kitchenTimes.dl && !kt["escalated_2230"]) {
                             nextState.users[u].balance -= 2.0;
-                            if (!nextState.kitchenTasks) nextState.kitchenTasks = {};
                             nextState.kitchenTasks["escalated_2230"] = true;
                             nextState.weeklyLog.push({ date: todayISO, user: u, event: "kitchen_late", delta: -2.0, note: "Дедлайн 22:30" });
-                            nextState.jobs.push({ 
-                                id: Date.now() + 101, creator: 'admin', title: "Помыть кухню за " + nextState.users[u].name, 
-                                reward: 2, deadline: next8AM, status: 'open', assignee: null, created: todayISO
-                            });
-                            messagesToSend.push(`<b>⚠️ Кухня просрочена!</b>\nПользователь: ${nextState.users[u].name}\nШтраф: -2.00€\nЗадача на Бирже.`);
+                            nextState.jobs.push({ id: Date.now()+101, creator:'admin', title:`Помыть кухню за ${nextState.users[u].name}`, reward:2, deadline:next8AM, status:'open', assignee:null, created:todayISO });
+                            currentBatchMessages.push(`<b>⚠️ Кухня просрочена!</b>\n${nextState.users[u].name}: -2.00€`);
                             stateChanged = true;
                         }
                     }
                 }
 
-                // Waste
-                ["toma", "valya"].forEach((u) => {
-                    const uWastes = nextState.wastes?.[u] || {};
-                    const hasWaste = Object.keys(uWastes).filter(k => !k.startsWith('escalated') && k !== 'overdue_migrated').length > 0;
-                    if (hasWaste && !nextState.wasteDone?.[u]) {
-                        if (checkReminders('waste', 'Вынос мусора 🗑️', u, wcTimes)) stateChanged = true;
-
-                        if (ts > wcTimes.dl && !uWastes["escalated_1830"] && !uWastes["escalated_1800"]) {
-                            nextState.users[u].balance -= 2.0;
-                            uWastes["escalated_1800"] = true;
-                            nextState.weeklyLog.push({ date: todayISO, user: u, event: "waste_late", delta: -2.0, note: "Мусор: дедлайн 18:00" });
-                            const title = "Вынести мусор за " + nextState.users[u].name;
-                            nextState.jobs.push({
-                                id: Date.now() + Math.random(), creator: 'admin', title, reward: 2, deadline: next8AM, status: 'open', assignee: null, created: todayISO
-                            });
-                            messagesToSend.push(`<b>⚠️ Мусор просрочен!</b>\nПользователь: ${nextState.users[u].name}\nШтраф: -2.00€\nЗадача на Бирже.`);
+                // Waste & Cleaning
+                ["toma", "valya"].forEach(u => {
+                    const uW = nextState.wastes?.[u] || {};
+                    const incompleteW = Object.entries(uW).filter(([k,v]) => !k.startsWith('escalated') && v === false);
+                    if (incompleteW.length > 0 && !nextState.wasteDone?.[u]) {
+                        if (checkReminders('waste', 'Мусор 🗑️', u, wcTimes)) stateChanged = true;
+                        if (ts > wcTimes.dl && !uW["escalated_1800"]) {
+                            nextState.users[u].balance -= 2.0; uW["escalated_1800"] = true;
+                            nextState.weeklyLog.push({ date: todayISO, user: u, event: "waste_late", delta: -2.0, note: "Мусор 18:00" });
+                            nextState.jobs.push({ id: Date.now()+Math.random(), creator:'admin', title:`Мусор за ${nextState.users[u].name}`, reward:2, deadline:next8AM, status:'open', assignee:null, created:todayISO });
+                            currentBatchMessages.push(`<b>⚠️ Мусор просрочен!</b>\n${nextState.users[u].name}: -2.00€`);
+                            stateChanged = true;
+                        }
+                    }
+                    const uC = nextState.cleaningTasks?.[u] || {};
+                    const incompleteC = Object.entries(uC).filter(([k,v]) => !k.startsWith('escalated') && v === false);
+                    if (incompleteC.length > 0 && !nextState.cleaningDone?.[u]) {
+                        if (checkReminders('cleaning', `Уборка зоны 🧽`, u, wcTimes)) stateChanged = true;
+                        if (ts > wcTimes.dl && !uC["escalated_1800"]) {
+                            nextState.users[u].balance -= 2.0; uC["escalated_1800"] = true;
+                            nextState.weeklyLog.push({ date: todayISO, user: u, event: "cleaning_late", delta: -2.0, note: "Уборка 18:00" });
+                            nextState.jobs.push({ id: Date.now()+Math.random()+0.3, creator:'admin', title:`Уборка за ${nextState.users[u].name}`, reward:2, deadline:next8AM, status:'open', assignee:null, created:todayISO });
+                            currentBatchMessages.push(`<b>⚠️ Уборка просрочена!</b>\n${nextState.users[u].name}: -2.00€`);
                             stateChanged = true;
                         }
                     }
                 });
 
-                // Cleaning
-                ["toma", "valya"].forEach((u) => {
-                    const uCleaning = nextState.cleaningTasks?.[u] || {};
-                    const hasCleaning = Object.keys(uCleaning).filter(k => !k.startsWith('escalated') && k !== 'overdue_migrated').length > 0;
-                    if (hasCleaning && !nextState.cleaningDone?.[u]) {
-                        if (checkReminders('cleaning', `Уборка зоны (${nextState.monthlyZones?.[u] || ''}) 🧽`, u, wcTimes)) stateChanged = true;
-
-                        if (ts > wcTimes.dl && !uCleaning["escalated_1830"] && !uCleaning["escalated_1800"]) {
-                            nextState.users[u].balance -= 2.0;
-                            uCleaning["escalated_1800"] = true;
-                            nextState.weeklyLog.push({ date: todayISO, user: u, event: "cleaning_late", delta: -2.0, note: "Уборка: дедлайн 18:00" });
-                            const title = "Убраться за " + nextState.users[u].name;
-                            nextState.jobs.push({
-                                id: Date.now() + Math.random(), creator: 'admin', title, reward: 2, deadline: next8AM, status: 'open', assignee: null, created: todayISO
-                            });
-                            messagesToSend.push(`<b>⚠️ Уборка просрочена!</b>\nПользователь: ${nextState.users[u].name}\nШтраф: -2.00€\nЗадача на Бирже.`);
-                            stateChanged = true;
-                        }
-                    }
-                });
-
-                if (stateChanged) transaction.set(stateRef, nextState);
+                if (stateChanged) {
+                    transaction.set(stateRef, nextState);
+                    transactionSuccess = true;
+                    messagesToSend = currentBatchMessages;
+                }
             });
 
-            for (const msg of messagesToSend) {
-                try { await sendTelegramMessage(msg); } catch (e) {}
+            if (transactionSuccess && messagesToSend.length > 0) {
+                console.log(`[SERVER] [${serverInstanceId}] Sending bucket of ${messagesToSend.length} messages.`);
+                for (const msg of messagesToSend) {
+                    try { 
+                        const res = await sendTelegramMessage(msg); 
+                        console.log(`[SERVER] [${serverInstanceId}] TG Sent: ${msg.split('\n')[0].replace(/<[^>]*>/g, '')}`);
+                        if (!res.success) {
+                            await runTransaction(db, async (t) => {
+                                const sr = doc(db, "state", "current");
+                                const sn = await t.get(sr);
+                                if (sn.exists()) t.update(sr, { "serverHeartbeat.lastTgError": res.error });
+                            });
+                        }
+                    } catch (e) {
+                         console.error(`[SERVER] [${serverInstanceId}] Message error:`, e);
+                    }
+                }
             }
         } catch (e) { 
-            console.error("[SERVER] Loop tick error:", e); 
+            console.error(`[SERVER] [${serverInstanceId}] Error in loop:`, e); 
+        } finally {
+            // Schedule next tick after 60 seconds
+            setTimeout(runLoop, 60000);
         }
-    }, 30000);
+    }
+
+    // Start the process
+    runLoop();
+
 
     if (process.env.NODE_ENV !== "production") {
       const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });

@@ -2553,9 +2553,38 @@ export default function App() {
                 </button>
               </div>
               <div style={{ fontSize: 12, color: "#64748B", display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <p>Бот: {(import.meta as any).env.VITE_TELEGRAM_BOT_TOKEN ? '✅ Настроен' : '❌ Не настроен'}</p>
+                <p>Бот (Клиент): {(import.meta as any).env.VITE_TELEGRAM_BOT_TOKEN ? '✅ Настроен' : '❌ Не настроен'}</p>
+                <p>Бот (Сервер): {state.serverHeartbeat?.tgConfigured ? '✅ Настроен' : '❌ Не настроен'}</p>
+                {state.serverHeartbeat?.lastTgError && (
+                  <p style={{ color: "#EF4444", fontSize: 10 }}>Ошибка TG: {state.serverHeartbeat.lastTgError}</p>
+                )}
                 <p>Чат ID: {(import.meta as any).env.VITE_TELEGRAM_CHAT_ID ? '✅ Настроен' : '❌ Не настроен'}</p>
+                <p>Статус сервера: { (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 90000)) ? '✅ Активен' : '❌ Оффлайн' }</p>
                 <p>Время устройства: {new Date().toLocaleTimeString()}</p>
+                
+                <button 
+                  onClick={async () => {
+                    const res = await sendTelegramMessage("<b>🧪 Тестовое сообщение</b>\nЕсли вы это видите, значит Telegram настроен правильно!");
+                    if (res.success) showToast("✅ Тест успешно отправлен", "success");
+                    else showToast(`❌ Ошибка: ${res.error}`, "error");
+                  }}
+                  style={{ 
+                    marginTop: 8, 
+                    padding: "6px 12px", 
+                    borderRadius: 6, 
+                    border: "1px solid #E2E8F0", 
+                    background: "#F8FAFC",
+                    fontSize: 11,
+                    cursor: "pointer"
+                  }}
+                >
+                  Проверить Telegram
+                </button>
+
+                <p style={{ marginTop: 8, fontSize: 11, fontStyle: 'italic' }}>
+                  Примечание: Если сервер "Оффлайн", уведомления могут приходить с задержкой. 
+                  Сервер автоматически просыпается при активности в приложении.
+                </p>
               </div>
             </div>
         </div>
