@@ -1,20 +1,20 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# HomeOS
 
-# Run and deploy your AI Studio app
+Семейная система управления домашними задачами: дежурства, штрафы, награды, биржа заданий, уведомления в Telegram и недельный баланс.
 
-This contains everything you need to run your app locally.
+## Features
+- Daily kitchen duty rotation
+- Waste and cleaning schedule
+- Child/admin roles
+- Telegram reminders
+- Penalty appeals
+- Weekly ledger and payouts
+- Vacation mode
 
-View your app in AI Studio: https://ai.studio/apps/605879b5-4e04-411a-a1d0-54fe743c4a60
-
-## Run Locally
-
-**Prerequisites:**  Node.js
-
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Tech stack
+- React 19
+- Vite
+- Express
+- Firebase Firestore
+- Firebase Storage
+- Telegram Bot API
