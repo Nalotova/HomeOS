@@ -259,9 +259,9 @@ async function startServer() {
                 const kitchenTimes = getTimes(22, 30);
                 const wcTimes = getTimes(18, 0);
 
-                // Morning Brief
+                // Morning Brief & Auto-Cleanup
                 const morningNotif = `morning_briefing_${todayISO}`;
-                if (h === 8 && m < 15 && !nextState.notificationsSent.includes(morningNotif)) {
+                if (h >= 8 && !nextState.notificationsSent.includes(morningNotif)) {
                     nextState.notificationsSent.push(morningNotif);
                     const dutyName = nextState.users[nextState.kitchenDuty]?.name || nextState.kitchenDuty;
                     let brief = `<b>☀️ HomeOS: Отчет (${todayISO})</b>\n\n`;
@@ -269,19 +269,39 @@ async function startServer() {
                     if (day === 5) brief += `🧽 Пятница — день уборки!\n`;
                     if (day === 2 || day === 5) brief += `🗑️ Сегодня вынос мусора!\n`;
                     currentBatchMessages.push(brief);
+                    
+                    // AUTO-COLLAPSE logic:
+                    // If it's NOT Tue or Fri, cleanup waste
+                    if (day !== 2 && day !== 5) {
+                        nextState.wastes = { toma: {}, valya: {} };
+                        nextState.wasteDone = { toma: false, valya: false };
+                    }
+                    // If it's NOT Fri, cleanup cleaning
+                    if (day !== 5) {
+                        nextState.cleaningTasks = { toma: {}, valya: {} };
+                        nextState.cleaningDone = { toma: false, valya: false };
+                    }
+                    
                     stateChanged = true;
                 }
 
-                const checkReminders = (taskKey: string, taskDesc: string, userKey: string, times: {r1: number, r2: number}) => {
+                const checkReminders = (taskKey: string, taskDesc: string, userKey: string, times: {r1: number, r2: number}, allowedDays: number[]) => {
+                    if (!allowedDays.includes(day)) return false; 
+
                     const n1 = `${taskKey}_r1_${userKey}_${todayISO}`;
                     const n2 = `${taskKey}_r2_${userKey}_${todayISO}`;
                     let t = false;
-                    if (ts >= times.r1 && !nextState.notificationsSent.includes(n1)) {
+                    
+                    // Guard: only send if we are within valid window (don't send at 20:00 if deadline was at 18:00)
+                    const deadlineWindow = 120 * 60 * 1000; // 2 hours after event is maximum we care
+                    const isTooLate = ts > times.r1 + deadlineWindow;
+
+                    if (!isTooLate && ts >= times.r1 && !nextState.notificationsSent.includes(n1)) {
                         nextState.notificationsSent.push(n1);
                         currentBatchMessages.push(`<b>⏰ Напоминание (1.5 ч)!</b>\n${nextState.users[userKey].name}, пора: ${taskDesc}`);
                         t = true;
                     }
-                    if (ts >= times.r2 && !nextState.notificationsSent.includes(n2)) {
+                    if (!isTooLate && ts >= times.r2 && !nextState.notificationsSent.includes(n2)) {
                         nextState.notificationsSent.push(n2);
                         currentBatchMessages.push(`<b>⌛ Внимание (30 мин)!</b>\n${nextState.users[userKey].name}, скоро дедлайн: ${taskDesc}`);
                         t = true;
@@ -289,13 +309,13 @@ async function startServer() {
                     return t;
                 };
 
-                // Kitchen duty
+                // Kitchen duty (Every day)
                 if (!nextState.kitchenDone) {
                     const u = nextState.kitchenDuty;
                     const kt = nextState.kitchenTasks || {};
                     const incomplete = Object.entries(kt).filter(([k,v]) => !k.startsWith('escalated') && v === false);
                     if (incomplete.length > 0) {
-                        if (checkReminders('kitchen', 'Кухня 🧼', u, kitchenTimes)) stateChanged = true;
+                        if (checkReminders('kitchen', 'Кухня 🧼', u, kitchenTimes, [0,1,2,3,4,5,6])) stateChanged = true;
                         if (ts > kitchenTimes.dl && !kt["escalated_2230"]) {
                             nextState.users[u].balance -= 2.0;
                             nextState.kitchenTasks["escalated_2230"] = true;
@@ -307,13 +327,13 @@ async function startServer() {
                     }
                 }
 
-                // Waste & Cleaning
+                // Waste & Cleaning (Specific days)
                 ["toma", "valya"].forEach(u => {
                     const uW = nextState.wastes?.[u] || {};
                     const incompleteW = Object.entries(uW).filter(([k,v]) => !k.startsWith('escalated') && v === false);
                     if (incompleteW.length > 0 && !nextState.wasteDone?.[u]) {
-                        if (checkReminders('waste', 'Мусор 🗑️', u, wcTimes)) stateChanged = true;
-                        if (ts > wcTimes.dl && !uW["escalated_1800"]) {
+                        if (checkReminders('waste', 'Мусор 🗑️', u, wcTimes, [2, 5])) stateChanged = true;
+                        if ((day === 2 || day === 5) && ts > wcTimes.dl && !uW["escalated_1800"]) {
                             nextState.users[u].balance -= 2.0; uW["escalated_1800"] = true;
                             nextState.weeklyLog.push({ date: todayISO, user: u, event: "waste_late", delta: -2.0, note: "Мусор 18:00" });
                             nextState.jobs.push({ id: Date.now()+Math.random(), creator:'admin', title:`Мусор за ${nextState.users[u].name}`, reward:2, deadline:next8AM, status:'open', assignee:null, created:todayISO });
@@ -324,8 +344,8 @@ async function startServer() {
                     const uC = nextState.cleaningTasks?.[u] || {};
                     const incompleteC = Object.entries(uC).filter(([k,v]) => !k.startsWith('escalated') && v === false);
                     if (incompleteC.length > 0 && !nextState.cleaningDone?.[u]) {
-                        if (checkReminders('cleaning', `Уборка зоны 🧽`, u, wcTimes)) stateChanged = true;
-                        if (ts > wcTimes.dl && !uC["escalated_1800"]) {
+                        if (checkReminders('cleaning', `Уборка зоны 🧽`, u, wcTimes, [5])) stateChanged = true;
+                        if (day === 5 && ts > wcTimes.dl && !uC["escalated_1800"]) {
                             nextState.users[u].balance -= 2.0; uC["escalated_1800"] = true;
                             nextState.weeklyLog.push({ date: todayISO, user: u, event: "cleaning_late", delta: -2.0, note: "Уборка 18:00" });
                             nextState.jobs.push({ id: Date.now()+Math.random()+0.3, creator:'admin', title:`Уборка за ${nextState.users[u].name}`, reward:2, deadline:next8AM, status:'open', assignee:null, created:todayISO });
@@ -371,6 +391,17 @@ async function startServer() {
     // Start the process
     runLoop();
 
+
+    // API routes FIRST
+    app.get("/api/health", (req, res) => {
+        res.json({ status: "ok", instanceId: serverInstanceId, time: new Date().toISOString() });
+    });
+
+    app.get("/api/cron", (req, res) => {
+        // Simple ping endpoint to wake the server
+        console.log(`[CRON] Server pinged at ${new Date().toLocaleTimeString()}`);
+        res.json({ wake: "success", time: new Date().toISOString() });
+    });
 
     if (process.env.NODE_ENV !== "production") {
       const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
