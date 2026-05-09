@@ -60,19 +60,6 @@ async function startServer() {
     const firebaseApp = initializeApp(firebaseConfig);
     const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
 
-    // Startup Telegram Notification
-    try {
-        const startupMsg = "<b>🚀 Сервер HomeOS запущен!</b>\nСистема уведомлений активна. Ожидайте напоминаний.";
-        const res = await sendTelegramMessage(startupMsg);
-        if (res.success) {
-            console.log("[SERVER] Startup notification sent to Telegram");
-        } else {
-            console.error("[SERVER] Startup notification failed:", res.error);
-        }
-    } catch (e) {
-        console.error("[SERVER] Failed to send startup notification:", e);
-    }
-
     // Heartbeat & Notification Loop (Safe Recursive Pattern with Instance Locking)
     const serverInstanceId = Math.random().toString(36).substring(2, 10);
     console.log(`[SERVER] Instance ID: ${serverInstanceId}`);
@@ -259,7 +246,7 @@ async function startServer() {
                 const kitchenTimes = getTimes(22, 30);
                 const wcTimes = getTimes(18, 0);
 
-                // Morning Brief & Auto-Cleanup
+                // Morning Brief
                 const morningNotif = `morning_briefing_${todayISO}`;
                 if (h >= 8 && !nextState.notificationsSent.includes(morningNotif)) {
                     nextState.notificationsSent.push(morningNotif);
@@ -269,20 +256,30 @@ async function startServer() {
                     if (day === 5) brief += `🧽 Пятница — день уборки!\n`;
                     if (day === 2 || day === 5) brief += `🗑️ Сегодня вынос мусора!\n`;
                     currentBatchMessages.push(brief);
-                    
-                    // AUTO-COLLAPSE logic:
-                    // If it's NOT Tue or Fri, cleanup waste
-                    if (day !== 2 && day !== 5) {
-                        nextState.wastes = { toma: {}, valya: {} };
-                        nextState.wasteDone = { toma: false, valya: false };
-                    }
-                    // If it's NOT Fri, cleanup cleaning
-                    if (day !== 5) {
-                        nextState.cleaningTasks = { toma: {}, valya: {} };
-                        nextState.cleaningDone = { toma: false, valya: false };
-                    }
-                    
                     stateChanged = true;
+                }
+
+                // Auto-Cleanup logic:
+                // Ensure UI is closed on days where there's no task, but ONLY after 08:15 AM
+                // This allows people to finish tasks until 8:00 on Saturday morning for example,
+                // and then at 08:15 the system "collapses" everything.
+                if (h >= 8 && (h > 8 || m >= 15)) {
+                    if (day !== 2 && day !== 5) {
+                        const hasW = Object.keys(nextState.wastes?.toma || {}).length > 0 || Object.keys(nextState.wastes?.valya || {}).length > 0;
+                        if (hasW) {
+                            nextState.wastes = { toma: {}, valya: {} };
+                            nextState.wasteDone = { toma: false, valya: false };
+                            stateChanged = true;
+                        }
+                    }
+                    if (day !== 5) {
+                        const hasC = Object.keys(nextState.cleaningTasks?.toma || {}).length > 0 || Object.keys(nextState.cleaningTasks?.valya || {}).length > 0;
+                        if (hasC) {
+                            nextState.cleaningTasks = { toma: {}, valya: {} };
+                            nextState.cleaningDone = { toma: false, valya: false };
+                            stateChanged = true;
+                        }
+                    }
                 }
 
                 const checkReminders = (taskKey: string, taskDesc: string, userKey: string, times: {r1: number, r2: number}, allowedDays: number[]) => {
