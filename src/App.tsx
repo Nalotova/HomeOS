@@ -93,7 +93,12 @@ const defaultState = (): AppState => {
       toma: { name: "Томочка", emoji: "🌿", balance: 10.0, gymWallet: 0, totalEarned: 0 },
       valya: { name: "Валечка", emoji: "⚡", balance: 10.0, gymWallet: 0, totalEarned: 0 },
     },
-    kitchenDuty: (now.getDay() % 2 === 1) ? "toma" : "valya",
+    kitchenDuty: (() => {
+      const anchor = new Date("2026-05-11T00:00:00Z");
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const diff = Math.floor((today.getTime() - anchor.getTime()) / (1000 * 60 * 60 * 24));
+      return (diff % 2 === 0) ? "valya" : "toma";
+    })(),
     kitchenDone: false,
     kitchenTasks: { 
       "Посудомойка": false, 
@@ -179,12 +184,21 @@ export default function App() {
   const isAdmin = activeUser === "admin";
 
   const deleteLogEntry = (idx: number) => {
-    console.log("deleting log at index:", idx);                
-    if (!isAdmin && state.weeklyLog[idx].user !== activeUser) return;
+    const entry = state.weeklyLog[idx];
+    if (!entry) return;
+    
+    // Task 9: Only admin can delete fines
+    const isFine = ['kitchen_late', 'bug_fine', 'waste_late', 'cleaning_late'].includes(entry.event);
+    if (isFine && !isAdmin) {
+      showToast("Удалять штрафы может только админ 🛡️", "error");
+      return;
+    }
+
+    if (!isAdmin && entry.user !== activeUser) return;
     
     persist(s => {
-      const entry = s.weeklyLog[idx];
-      if (!entry) return s;
+      const entryToDel = s.weeklyLog[idx];
+      if (!entryToDel) return s;
 
       const nextLogs = [...s.weeklyLog];
       nextLogs.splice(idx, 1);
@@ -295,16 +309,29 @@ export default function App() {
     showToast("Штраф отменен, работа зачтена ✅", "success");
   };
 
+  const sentRequestsRef = useRef<Set<string>>(new Set());
+
   const requestPenaltyCancellation = (category: 'kitchen' | 'waste' | 'cleaning', userKey: 'toma' | 'valya') => {
     if (isAdmin) return;
     const name = state.users[userKey].name;
     const categoryLabel = category === 'kitchen' ? 'Кухня' : category === 'waste' ? 'Мусор' : 'Уборка';
     
+    // Pre-check with state
+    const alreadyRequested = (state.adminRequests || []).some(r => 
+      r.user === userKey && r.category === category && r.status === 'pending'
+    );
+    if (alreadyRequested) return;
+
+    // Task 10: Extra guard against rapid clicks/duplication
+    const reqKey = `${category}-${userKey}-${new Date().toISOString().slice(0, 13)}`; // Hourly granularity
+    if (sentRequestsRef.current.has(reqKey)) return;
+    sentRequestsRef.current.add(reqKey);
+    
     persist(s => {
-      const alreadyRequested = (s.adminRequests || []).some(r => 
+      const existsInCurrent = (s.adminRequests || []).some(r => 
         r.user === userKey && r.category === category && r.status === 'pending'
       );
-      if (alreadyRequested) return s;
+      if (existsInCurrent) return s;
 
       const newReq: AdminRequest = {
         id: Date.now(),
@@ -315,22 +342,36 @@ export default function App() {
         status: 'pending'
       };
 
-      sendTelegramMessage(`<b>🆘 Запрос на отмену штрафа!</b>\nОт: ${name}\nКатегория: ${categoryLabel}\nАдмин, проверь в приложении!`);
-
       return {
         ...s,
         adminRequests: [...(s.adminRequests || []), newReq]
       };
     });
+
+    sendTelegramMessage(`<b>🆘 Запрос на отмену штрафа!</b>\nОт: ${name}\nКатегория: ${categoryLabel}\nАдмин, проверь в приложении!`);
     showToast("Запрос на отмену штрафа отправлен!", "info");
   };
 
+  const resolvedRequestIdsRef = useRef<Set<number>>(new Set());
+
   const resolvePenaltyAppeal = (reqId: number, approved: boolean) => {
     if (!isAdmin) return;
+    
+    // Task 10: Prevent duplicate resolution messages
+    if (resolvedRequestIdsRef.current.has(reqId)) return;
+
+    const req = (state.adminRequests || []).find(r => r.id === reqId);
+    if (!req || req.status !== 'pending') return;
+
+    resolvedRequestIdsRef.current.add(reqId);
+    const userKey = req.user;
+    const userName = state.users[userKey].name;
+    const category = req.category;
+
     persist(s => {
       const requests = s.adminRequests || [];
-      const req = requests.find(r => r.id === reqId);
-      if (!req) return s;
+      const appealReq = requests.find(r => r.id === reqId);
+      if (!appealReq || appealReq.status !== 'pending') return s;
 
       let nextUsers = { ...s.users };
       let nextWeeklyLog = [...s.weeklyLog];
@@ -338,22 +379,15 @@ export default function App() {
 
       if (approved) {
         // Remove penalty
-        const userKey = req.user;
         nextUsers[userKey] = { ...nextUsers[userKey], balance: nextUsers[userKey].balance + 2.0 };
         
         // Find and remove the specific penalty log
-        const logEvent = req.category === 'kitchen' ? 'kitchen_late' : req.category === 'waste' ? 'waste_late' : 'cleaning_late';
-        nextWeeklyLog = nextWeeklyLog.filter(l => !(l.user === userKey && l.event === logEvent && l.date === req.date.slice(0,10)));
+        const logEvent = category === 'kitchen' ? 'kitchen_late' : category === 'waste' ? 'waste_late' : 'cleaning_late';
+        nextWeeklyLog = nextWeeklyLog.filter(l => !(l.user === userKey && l.event === logEvent && l.date === appealReq.date.slice(0,10)));
 
         // Remove the market job for this task
-        const jobTitleSnippet = req.category === 'kitchen' ? 'КУХНЯ' : req.category === 'waste' ? 'МУСОР' : 'УБОРКА';
+        const jobTitleSnippet = category === 'kitchen' ? 'КУХНЯ' : category === 'waste' ? 'МУСОР' : 'УБОРКА';
         nextJobs = nextJobs.filter(j => !(j.creator === 'admin' && j.title.includes(jobTitleSnippet) && j.title.includes(nextUsers[userKey].name)));
-
-        showToast("Штраф отменен!", "success");
-        sendTelegramMessage(`<b>✅ Штраф за ${req.category} (${nextUsers[userKey].name}) ОТМЕНЕН!</b>`);
-      } else {
-        showToast("Запрос отклонен. Штраф остается.", "error");
-        sendTelegramMessage(`<b>❌ Запрос на отмену штрафа за ${req.category} (${nextUsers[req.user].name}) ОТКЛОНЕН.</b>\nРабота должна быть выполнена!`);
       }
 
       return {
@@ -364,6 +398,14 @@ export default function App() {
         adminRequests: requests.map(r => r.id === reqId ? { ...r, status: approved ? 'approved' : 'rejected' } : r)
       };
     });
+
+    if (approved) {
+      showToast("Штраф отменен!", "success");
+      sendTelegramMessage(`<b>✅ Штраф за ${category} (${userName}) ОТМЕНЕН!</b>`);
+    } else {
+      showToast("Запрос отклонен. Штраф остается.", "error");
+      sendTelegramMessage(`<b>❌ Запрос на отмену штрафа за ${category} (${userName}) ОТКЛОНЕН.</b>\nРабота должна быть выполнена!`);
+    }
   };
 
   const resolveAdminRequest = (job: Job) => {
@@ -1091,12 +1133,6 @@ export default function App() {
       bugs: [],
       jobs: [], // Clear all jobs
       gymLogs: [], // Clear gym logs
-      kitchenDone: true, // Set to true to prevent immediate re-fine if past deadline
-      kitchenTasks: { "Посудомойка": false, "Столы": false, "Плита": false }, // Reset kitchen tasks
-      cleaningDone: { toma: true, valya: true }, // Same for cleaning
-      wasteDone: { toma: true, valya: true }, // Same for waste
-      wastes: { toma: {}, valya: {} },
-      cleaningTasks: { toma: {}, valya: {} },
       weeklyWinner: winner,
       adminRequests: [], // Clear admin requests
     }));
@@ -2559,7 +2595,7 @@ export default function App() {
                   <p style={{ color: "#EF4444", fontSize: 10 }}>Ошибка TG: {state.serverHeartbeat.lastTgError}</p>
                 )}
                 <p>Чат ID: {(import.meta as any).env.VITE_TELEGRAM_CHAT_ID ? '✅ Настроен' : '❌ Не настроен'}</p>
-                <p>Статус сервера: { (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 90000)) ? '✅ Активен' : '❌ Оффлайн' }</p>
+                <p>Статус сервера: { (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 360000)) ? '✅ Активен' : '❌ Оффлайн' }</p>
                 <p>Время устройства: {new Date().toLocaleTimeString()}</p>
                 
                 <button 
@@ -3129,9 +3165,9 @@ export default function App() {
                   width: 8, 
                   height: 8, 
                   borderRadius: "50%", 
-                  background: (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 90000)) ? "#10B981" : "#EF4444", 
+                  background: (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 360000)) ? "#10B981" : "#EF4444", 
                   display: "inline-block",
-                  boxShadow: (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 90000)) ? "0 0 8px #10B98188" : "none"
+                  boxShadow: (state.serverHeartbeat && (Date.now() - state.serverHeartbeat.lastTick < 360000)) ? "0 0 8px #10B98188" : "none"
                 }} title={state.serverHeartbeat ? `Сервер: ${state.serverHeartbeat.lastLocalTime} (Активен)` : "Сервер не в сети"} />
               </h1>
             </div>

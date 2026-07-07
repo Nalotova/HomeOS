@@ -114,7 +114,7 @@ export const Ledger = ({ activeUser, isAdmin, state, weeklyExpected, deleteLogEn
                       {tx.delta >= 0 ? "+" : ""}{tx.delta.toFixed(2)} €
                     </td>
                     <td style={{ ...styles.td, whiteSpace: "nowrap" }}>{new Date(tx.date).toLocaleDateString("ru-RU")}</td>
-                    {(isAdmin || tx.user === activeUser) && (
+                    {isAdmin && (
                       <td style={{ ...styles.td, textAlign: "right", paddingRight: 12 }}>
                         <button 
                           style={{ 

@@ -64,6 +64,21 @@ async function startServer() {
     const serverInstanceId = Math.random().toString(36).substring(2, 10);
     console.log(`[SERVER] Instance ID: ${serverInstanceId}`);
 
+    const cleanState = (obj: any): any => {
+        if (obj === undefined) return null;
+        if (obj === null || typeof obj !== 'object') return obj;
+        if (obj instanceof Date) return obj.toISOString();
+        if (Array.isArray(obj)) return obj.map(cleanState);
+        const out: any = {};
+        for (const key in obj) {
+          const val = obj[key];
+          if (val !== undefined) {
+            out[key] = cleanState(val);
+          }
+        }
+        return out;
+    };
+
     async function runLoop() {
         const iterationId = Math.random().toString(36).substring(7);
         try {
@@ -92,11 +107,11 @@ async function startServer() {
                 const state = stateSnap.data();
                 
                 // SINGLETON LOCK: Only the instance that updated the heartbeat most recently 
-                // or after a timeout (90s) can claim the tick to avoid duplicates.
+                // or after a timeout (5min) can claim the tick to avoid duplicates.
                 const lastHeartbeat = state.serverHeartbeat?.lastTick || 0;
                 const isLeader = !state.serverHeartbeat?.instanceId || 
                                  state.serverHeartbeat?.instanceId === serverInstanceId || 
-                                 (now - lastHeartbeat > 90000);
+                                 (now - lastHeartbeat > 300000); // 5 minutes timeout
 
                 const nextState = JSON.parse(JSON.stringify(state));
                 
@@ -114,30 +129,40 @@ async function startServer() {
                     id.includes(todayISO) || id.includes(yesterdayISO)
                 );
 
-                nextState.serverHeartbeat = {
-                    lastTick: now,
-                    lastLocalTime: `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`,
-                    lastLocalDate: todayISO,
-                    iterationId,
-                    instanceId: serverInstanceId,
-                    tgConfigured: !!(process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN || state.tgBotToken)
-                };
+                const shouldUpdateHeartbeat = (now - lastHeartbeat) > 240000; // 4 minutes
+
+                if (shouldUpdateHeartbeat || !state.serverHeartbeat?.instanceId) {
+                    nextState.serverHeartbeat = {
+                        lastTick: now,
+                        lastLocalTime: `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`,
+                        lastLocalDate: todayISO,
+                        iterationId,
+                        instanceId: serverInstanceId,
+                        tgConfigured: !!(process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN || state.tgBotToken)
+                    };
+                } else {
+                    nextState.serverHeartbeat = state.serverHeartbeat; // Keep existing
+                }
                 
                 if (state.vacationMode) {
-                    transaction.set(stateRef, nextState);
-                    transactionSuccess = true;
+                    if (shouldUpdateHeartbeat && isLeader) {
+                        transaction.set(stateRef, cleanState(nextState));
+                        transactionSuccess = true;
+                    }
                     return;
                 }
 
-                // If not the leader, just update heartbeat (for visibility) but don't send notifications
+                // If not the leader, DO NOT write to Firestore to save quota!
                 if (!isLeader) {
-                    transaction.set(stateRef, nextState);
-                    transactionSuccess = true; 
                     return;
                 }
 
-                let stateChanged = true; 
-                const expectedDuty = (day % 2 === 1) ? "toma" : "valya";
+                // By default, we DO NOT write state unless something actually changed OR we need a heartbeat update
+                let stateChanged = shouldUpdateHeartbeat; 
+                const date = new Date(todayISO);
+                const diffTime = date.getTime() - new Date("2026-05-11").getTime();
+                const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                const expectedDuty = (diffDays % 2 === 0) ? "valya" : "toma";
 
                 // 0. CHECK FOR RESET / ROTATION
                 const isNewDay = nextState.lastRotationISO !== todayISO;
@@ -222,7 +247,8 @@ async function startServer() {
                         const dl = new Date(job.deadline).getTime();
                         if ((job.status === 'open' || job.status === 'in_progress') && dl < now) {
                             job.status = 'expired';
-                            if (job.assignee) {
+                            // Only reincarnate if it wasn't already a savior job and had an assignee who failed
+                            if (job.assignee && !job.title.includes('🆘 СПАСЕНИЕ')) {
                                 const fu = job.assignee;
                                 nextState.jobs.push({
                                     ...job, id: Date.now() + Math.random(), status: 'open', assignee: null,
@@ -231,6 +257,8 @@ async function startServer() {
                                     failedUser: fu, created: todayISO
                                 });
                                 currentBatchMessages.push(`<b>🚑 Задача просрочена!</b>\n${nextState.users[fu].name} не справился. Кто спасет?`);
+                            } else if (job.title.includes('🆘 СПАСЕНИЕ')) {
+                                currentBatchMessages.push(`<b>🛑 Задача спасения провалена!</b>\n"${job.title}" никто не взял. Она закрыта.`);
                             }
                             stateChanged = true;
                         }
@@ -353,7 +381,7 @@ async function startServer() {
                 });
 
                 if (stateChanged) {
-                    transaction.set(stateRef, nextState);
+                    transaction.set(stateRef, cleanState(nextState));
                     transactionSuccess = true;
                     messagesToSend = currentBatchMessages;
                 }
@@ -369,7 +397,7 @@ async function startServer() {
                             await runTransaction(db, async (t) => {
                                 const sr = doc(db, "state", "current");
                                 const sn = await t.get(sr);
-                                if (sn.exists()) t.update(sr, { "serverHeartbeat.lastTgError": res.error });
+                                if (sn.exists()) t.update(sr, { "serverHeartbeat.lastTgError": res.error || "Unknown TG error" });
                             });
                         }
                     } catch (e) {
