@@ -707,17 +707,34 @@ export default function App() {
     const randomMsg = messages[Math.floor(Math.random() * messages.length)];
 
     if (!onTime) {
-      persist((s) => ({
-        ...s,
-        kitchenDone: true,
-        users: {
-          ...s.users,
-          [u]: { ...s.users[u], balance: s.users[u].balance - 2.0 },
-        },
-        weeklyLog: [...s.weeklyLog, { date: todayISO(), user: u, event: "kitchen_late", delta: -2.0, note: "Дедлайн 22:30" }],
-      }));
-      showToast("⚠️ Дедлайн пропущен. Штраф -2.0 €", "error");
-      sendTelegramMessage(`<b>🔴 Кухня убрана с опозданием!</b>\nПользователь: ${userObj.name}\nШтраф: -2.00€`);
+      const alreadyEscalated = state.kitchenTasks?.["escalated_2230"];
+
+      persist((s) => {
+        let nextBalance = s.users[u].balance;
+        let nextWeeklyLog = [...s.weeklyLog];
+
+        if (!alreadyEscalated) {
+          nextBalance -= 2.0;
+          nextWeeklyLog.push({ date: todayISO(), user: u, event: "kitchen_late", delta: -2.0, note: "Дедлайн 22:30" });
+        }
+
+        return {
+          ...s,
+          kitchenDone: true,
+          users: {
+            ...s.users,
+            [u]: { ...s.users[u], balance: nextBalance },
+          },
+          weeklyLog: nextWeeklyLog
+        };
+      });
+
+      if (!alreadyEscalated) {
+        showToast("⚠️ Дедлайн пропущен. Штраф -2.0 €", "error");
+        sendTelegramMessage(`<b>🔴 Кухня убрана с опозданием!</b>\nПользователь: ${userObj.name}\nШтраф: -2.00€`);
+      } else {
+        showToast("Кухня убрана (с опозданием)", "info");
+      }
     } else {
       persist((s) => ({ ...s, kitchenDone: true }));
       showToast(randomMsg, "success");

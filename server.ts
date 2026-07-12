@@ -176,6 +176,42 @@ async function startServer() {
                     nextState.lastKitchenRotation = time.dateStr;
                     nextState.notificationsSent = []; // Reset daily sent list
 
+                    // Cleanup old jobs, bugs, logs
+                    const twoWeeksAgo = new Date(now - 14 * 24 * 60 * 60 * 1000);
+                    
+                    if (nextState.jobs) {
+                        nextState.jobs = nextState.jobs.filter((j: any) => {
+                            if (j.status === 'open' || j.status === 'in_progress') return true;
+                            if (j.created) return new Date(j.created).getTime() > twoWeeksAgo.getTime();
+                            return true;
+                        });
+                    }
+                    if (nextState.bugs) {
+                        nextState.bugs = nextState.bugs.filter((b: any) => {
+                            if (b.status === 'open') return true;
+                            if (b.created) return new Date(b.created).getTime() > twoWeeksAgo.getTime();
+                            return true;
+                        });
+                    }
+                    if (nextState.weeklyLog) {
+                        nextState.weeklyLog = nextState.weeklyLog.filter((l: any) => {
+                            if (l.date) return new Date(l.date).getTime() > twoWeeksAgo.getTime();
+                            return true;
+                        });
+                    }
+                    if (nextState.gymLogs) {
+                        nextState.gymLogs = nextState.gymLogs.filter((g: any) => {
+                            if (g.date) return new Date(g.date).getTime() > twoWeeksAgo.getTime();
+                            return true;
+                        });
+                    }
+                    if (nextState.adminRequests) {
+                        nextState.adminRequests = nextState.adminRequests.filter((r: any) => {
+                            if (r.created) return new Date(r.created).getTime() > twoWeeksAgo.getTime();
+                            return true;
+                        });
+                    }
+
                     // Waste logic
                     const swap = getWeekParity(now);
                     let newWasteTasks: Record<string, Record<string, boolean>> | null = null;
